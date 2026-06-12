@@ -666,14 +666,30 @@ class DeleteWorker(QObject):
             except Exception as inner:
                 print(f"[DELETE] Still failed after chmod: {path} → {inner}")
 
+        def _force_delete_windows(target: Path):
+            """Last-resort: delegate to Windows 'rd /s /q' which bypasses most locks."""
+            import subprocess, time
+            print(f"[DELETE] Falling back to rd /s /q: {target}")
+            subprocess.run(
+                ["cmd", "/c", "rd", "/s", "/q", str(target)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(0.5)
+
         try:
             self.progress.emit(f"Deleting '{folder.name}'…")
             shutil.rmtree(str(folder), onerror=_force_remove)
             print(f"[DELETE] rmtree complete. Folder exists after: {folder.exists()}")
 
+            # If rmtree left locked files behind, escalate to Windows rd /s /q
+            if folder.exists():
+                self.progress.emit(f"Some files locked — forcing deletion…")
+                _force_delete_windows(folder)
+
             if folder.exists():
                 raise OSError(
-                    f"Folder still exists after rmtree — some files may be locked."
+                    f"Folder still exists after forced deletion — files may be in use by another process."
                 )
 
             self.finished.emit(True, folder.name)

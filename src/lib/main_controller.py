@@ -2352,18 +2352,25 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _on_delete_complete(self, success: bool, message: str):
-        """Called on the main thread when background deletion finishes."""
+        """Called on the main thread when background deletion finishes.
+
+        Always refreshes the card list so the card is removed from the UI
+        regardless of whether the worker reported success or failure.
+        """
         self.hide_loading()
         self.refresh_btn.setEnabled(True)
 
         if success:
             folder_name = message  # worker emits folder.name on success
             self.status_label.setText(f"✅ Deleted '{folder_name}' successfully.")
-            self.load_software(reset_page=False)
-            self._display_current_page()
         else:
-            self.status_label.setText("❌ Delete failed — see details below.")
-            QMessageBox.critical(self, "Delete Failed", message)
+            # Still refresh — the folder may be gone even if the worker hit an error
+            self.status_label.setText("⚠️ Delete encountered issues — refreshing list.")
+            print(f"[DELETE] Non-fatal error reported: {message}")
+
+        # Always reload so the card disappears if the folder is gone
+        self.load_software(reset_page=False)
+        self._display_current_page()
 
     def show_version_info(self, folder_path):
         """Show version information from README.md (triggered by version label)"""
