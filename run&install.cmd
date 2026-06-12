@@ -14,10 +14,10 @@ if not exist "%BASE_DIR%App_Store\" (
     echo Created App_Store folder.
 )
 
-REM --- Auto-update: waits for runtime.exe to fully complete before continuing ---
+REM --- Auto-update: runs in this terminal, waits to fully complete before continuing ---
 if exist "%BASE_DIR%runtime.exe" (
     echo Checking for updates...
-    start /wait "" "%BASE_DIR%runtime.exe"
+    "%BASE_DIR%runtime.exe"
     echo Update check done. Launching app...
 )
 
@@ -25,16 +25,12 @@ REM --- Define environment paths ---
 set "ENV_DIR=%BASE_DIR%.venv"
 set "ENV_PYTHON=%ENV_DIR%\Scripts\python.exe"
 
-REM --- If venv still missing after updater ran, run install manually ---
+REM --- If venv still missing after updater ran, show error (runtime.exe should have handled this) ---
 if not exist "%ENV_PYTHON%" (
-    echo Virtual environment not found. Running install...
-    if exist "%BASE_DIR%env-Init.cmd" (
-        call "%BASE_DIR%env-Init.cmd"
-    ) else (
-        echo ERROR: env-Init.cmd not found. Please run env-Init.cmd manually.
-        pause
-        exit /b 1
-    )
+    echo ERROR: Virtual environment not found. runtime.exe may have encountered an error above.
+    echo Please check the log above, or run env-Init.cmd manually to set up the environment.
+    pause
+    exit /b 1
 )
 
 REM --- Launch app ---
