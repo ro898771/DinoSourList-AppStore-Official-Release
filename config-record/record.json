@@ -1,0 +1,851 @@
+{
+  "folder_id": "368728134757",
+  "item_count": 18,
+  "items": [
+    {
+      "name": "#Python@Deployment-RoeyYee",
+      "type": "folder",
+      "id": "388442422891",
+      "size": null,
+      "etag": "5",
+      "sequence_id": "5",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "388442422891",
+        "total_items": 6,
+        "items": [
+          {
+            "type": "file",
+            "id": "2273514397337",
+            "name": "8450147.ico"
+          },
+          {
+            "type": "file",
+            "id": "2273544503096",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2273675982783",
+            "name": "Python_Deployment_HowToUse.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2273682412306",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2273546839119",
+            "name": "v1.0.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2273680168418",
+            "name": "v1.0.0.1.zip"
+          }
+        ],
+        "summary": {
+          "files": 6,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "BandMaster-SuetLi",
+      "type": "folder",
+      "id": "368894919788",
+      "size": null,
+      "etag": "3",
+      "sequence_id": "3",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "368894919788",
+        "total_items": 6,
+        "items": [
+          {
+            "type": "file",
+            "id": "2228354070011",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2228359278338",
+            "name": "GuideLine.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2155059458308",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2234011694043",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2228374876740",
+            "name": "v1.0.0.3.zip"
+          },
+          {
+            "type": "file",
+            "id": "2228356244631",
+            "name": "v1.0.0.4.zip"
+          }
+        ],
+        "summary": {
+          "files": 6,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "BandMasterReverseBin-RoeyYee",
+      "type": "folder",
+      "id": "381791116439",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "381791116439",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2229232286400",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2229223794418",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2234063471519",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2229234128584",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "BinEditorPY-Kenny",
+      "type": "folder",
+      "id": "381795966655",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "381795966655",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2229261786566",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2229260521776",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2234052512607",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2229262288177",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "CleadaLoader-RoeyJiea",
+      "type": "folder",
+      "id": "383235071544",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "383235071544",
+        "total_items": 5,
+        "items": [
+          {
+            "type": "file",
+            "id": "2238245766829",
+            "name": "11629115.ico"
+          },
+          {
+            "type": "file",
+            "id": "2238245058827",
+            "name": "Cleada Loader.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2238230027292",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2238222715150",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2238239084542",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 5,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "Data Maping-RoeyJiea",
+      "type": "folder",
+      "id": "369387796694",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "369387796694",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2229220957333",
+            "name": "app.ico"
+          },
+          {
+            "type": "file",
+            "id": "2229216635178",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2234053473453",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2229220434910",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "Extractor Program Generator-SongZhi",
+      "type": "folder",
+      "id": "382031068090",
+      "size": null,
+      "etag": "2",
+      "sequence_id": "2",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "382031068090",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2230585911924",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2230734201102",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2230594931023",
+            "name": "v4.0.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2275462232466",
+            "name": "v5.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "GU Validation-TzerMing",
+      "type": "folder",
+      "id": "369385710780",
+      "size": null,
+      "etag": "2",
+      "sequence_id": "2",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "369385710780",
+        "total_items": 5,
+        "items": [
+          {
+            "type": "file",
+            "id": "2228472851973",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2155538600773",
+            "name": "Guide.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2228485076973",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2234063541234",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2228466037909",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 5,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "GUQC-RoeyYee",
+      "type": "folder",
+      "id": "386674784485",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "386674784485",
+        "total_items": 7,
+        "items": [
+          {
+            "type": "file",
+            "id": "2261490952545",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2261482802213",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2271688021947",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2265566238249",
+            "name": "v1.0.0.1.zip"
+          },
+          {
+            "type": "file",
+            "id": "2271682187511",
+            "name": "v2.0.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2275545244746",
+            "name": "v2.1.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2275609338543",
+            "name": "v2.2.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 7,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "LazyWorm-Senior",
+      "type": "folder",
+      "id": "381825937971",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "381825937971",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2229441170015",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2229436166361",
+            "name": "GuideLine.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2229437012966",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2229445175625",
+            "name": "v0.0.0.20.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "Module Power Tools-HanHsiung",
+      "type": "folder",
+      "id": "380219190867",
+      "size": null,
+      "etag": "0",
+      "sequence_id": "0",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "380219190867",
+        "total_items": 3,
+        "items": [
+          {
+            "type": "file",
+            "id": "2228178224527",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2219446235169",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2219461519085",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 3,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "Module Test Analysis Tool JMP-SongZhi",
+      "type": "folder",
+      "id": "382047505523",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "382047505523",
+        "total_items": 5,
+        "items": [
+          {
+            "type": "file",
+            "id": "2230720105981",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2275455846508",
+            "name": "Guide.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2230749532224",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2234058697452",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2230705713082",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 5,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "PasswordGeneration-DahHaur",
+      "type": "folder",
+      "id": "383232755932",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "383232755932",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2238215913594",
+            "name": "8665983.ico"
+          },
+          {
+            "type": "file",
+            "id": "2238212421270",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2238228229909",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2238225690233",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "ProductConfigEditor-WanLing",
+      "type": "folder",
+      "id": "381786743608",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "381786743608",
+        "total_items": 5,
+        "items": [
+          {
+            "type": "file",
+            "id": "2229208922286",
+            "name": "app_icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2229207143723",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2234073719882",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2229205009725",
+            "name": "v1.0.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2229205736679",
+            "name": "v2.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 5,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "QuickMi2e-RoeyYee",
+      "type": "folder",
+      "id": "369117752772",
+      "size": null,
+      "etag": "2",
+      "sequence_id": "2",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "369117752772",
+        "total_items": 6,
+        "items": [
+          {
+            "type": "file",
+            "id": "2219468932429",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2228121030778",
+            "name": "Guide.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2154777191002",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2234046594008",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2250754403620",
+            "name": "v7.0.0.2.zip"
+          },
+          {
+            "type": "file",
+            "id": "2250800637549",
+            "name": "v8.2.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 6,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "SbinValidation@master-RoeyJiea",
+      "type": "folder",
+      "id": "368892942501",
+      "size": null,
+      "etag": "4",
+      "sequence_id": "4",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "368892942501",
+        "total_items": 5,
+        "items": [
+          {
+            "type": "file",
+            "id": "2228438437896",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2154685713506",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2275934497997",
+            "name": "PAMiD Softbin Validation Program.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2155526961548",
+            "name": "v1.0.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2155518880025",
+            "name": "v1.0.0.2.zip"
+          }
+        ],
+        "summary": {
+          "files": 5,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "Statdex-RoeyJiea",
+      "type": "folder",
+      "id": "369509596389",
+      "size": null,
+      "etag": "1",
+      "sequence_id": "1",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "369509596389",
+        "total_items": 4,
+        "items": [
+          {
+            "type": "file",
+            "id": "2229456867925",
+            "name": "cmk.ico"
+          },
+          {
+            "type": "file",
+            "id": "2229473361210",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2233733939599",
+            "name": "GuideLine.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2229455320115",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 4,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "name": "TSF Limit Manager-XinRou",
+      "type": "folder",
+      "id": "387382573268",
+      "size": null,
+      "etag": "2",
+      "sequence_id": "2",
+      "created_at": null,
+      "modified_at": null,
+      "created_by": null,
+      "modified_by": null,
+      "contents": {
+        "folder_id": "387382573268",
+        "total_items": 5,
+        "items": [
+          {
+            "type": "file",
+            "id": "2266087700516",
+            "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2266128957141",
+            "name": "GuideLine.pptx"
+          },
+          {
+            "type": "file",
+            "id": "2266093036797",
+            "name": "icon.ico"
+          },
+          {
+            "type": "file",
+            "id": "2266104827237",
+            "name": "README.md"
+          },
+          {
+            "type": "file",
+            "id": "2266062020417",
+            "name": "v1.0.0.0.zip"
+          }
+        ],
+        "summary": {
+          "files": 5,
+          "folders": 0
+        },
+        "status": "SUCCESS"
+      }
+    }
+  ],
+  "status": "SUCCESS"
+}
