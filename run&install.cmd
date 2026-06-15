@@ -1,6 +1,10 @@
 @echo off
 setlocal
 
+REM ─── CONFIG — change these if the entry point moves ──────────────────────────
+set "MAIN_SCRIPT=src\main.py"
+REM ─────────────────────────────────────────────────────────────────────────────
+
 REM --- Get the directory of this batch file ---
 set "BASE_DIR=%~dp0"
 
@@ -35,7 +39,7 @@ if not exist "%ENV_PYTHON%" (
 
 REM --- Launch app ---
 set PYTHONDONTWRITEBYTECODE=1
-"%ENV_PYTHON%" "%BASE_DIR%src\main.py"
+"%ENV_PYTHON%" "%BASE_DIR%%MAIN_SCRIPT%"
 
 echo.
 echo Script complete. Press Enter to exit.

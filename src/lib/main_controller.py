@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Software Launcher Dashboard")
+        self.setWindowTitle("Beta V1.0.0.0")
         _ico = Path(__file__).parent.parent.parent / "IcoFolder" / "main.ico"
         if _ico.exists():
             from PySide6.QtGui import QIcon

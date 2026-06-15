@@ -1,6 +1,11 @@
 @echo off
 setlocal
 
+REM ─── CONFIG — change these if the Python version or index URL changes ─────────
+set "PYTHON_VERSION=3.12.1"
+set "INDEX_URL=https://usw2p-edge.packages.broadcom.net/artifactory/api/pypi/platform-pypi/simple"
+REM ─────────────────────────────────────────────────────────────────────────────
+
 REM ─── Define Environment Paths Relative to Script Location ────────────────────
 set "BASE_DIR=%~dp0"
 set "ENV_DIR=%BASE_DIR%.venv"
@@ -35,7 +40,7 @@ if errorlevel 1 (
 REM ─── Check if Virtual Environment Exists ──────────────────────────────────────
 if not exist "%ENV_DIR%" (
     echo Virtual environment not found. Creating virtual environment...
-    uv venv "%ENV_DIR%" --python 3.12.1 --index-url https://usw2p-edge.packages.broadcom.net/artifactory/api/pypi/platform-pypi/simple
+    uv venv "%ENV_DIR%" --python %PYTHON_VERSION% --index-url %INDEX_URL%
 )
 
 REM ─── Verify Creation ──────────────────────────────────────────────────────────
@@ -61,8 +66,8 @@ if exist "%ENV_PYTHON%" (
     REM ─── Install Requirements Using uv pip ────────────────────────────────────
     echo Installing requirements...
     pushd "%ENV_DIR%"
-	uv sync
-	popd
+    uv sync
+    popd
 
     REM ─── Run Python Script ───────────────────────────────────────────────────
     echo Running shortcut.py...
