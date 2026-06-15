@@ -1,6 +1,6 @@
 ## 🎉 Official Released V1.0.0.0
 
-We are excited to announce the release of the **1st Beta Version** of the Centralized Application Dashboard.
+We are excited to announce the release of the **1st Version** of the Centralized Application Dashboard after improve based on user feedback.
 Thank you to everyone who has been part of this journey!
 
 ## 💡 Proposed Solution: Centralized Application Dashboard
