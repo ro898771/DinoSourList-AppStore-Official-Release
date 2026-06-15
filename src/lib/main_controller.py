@@ -128,6 +128,7 @@ class MainWindow(QMainWindow):
         self.card_references = {}  # Store card references by folder path
         self.store_card_references = {}     # folder_name → StoreCard  (Page 2)
         self.dashboard_folder_name_map = {} # folder_name → folder_path str (Page 1)
+        self._store_data_cache = None       # cached result of _load_store_software(); None = stale
         self._llm_worker = _LLMWorker()     # worker created at startup; init deferred until dialog opens
 
         # Page names
@@ -1507,7 +1508,10 @@ class MainWindow(QMainWindow):
                 
                 # Reload software data to update ComboBoxes and buttons (without changing page)
                 self.load_software(reset_page=False)
-                
+
+                # Invalidate store cache so the next visit rescans fresh App_Store folders
+                self._store_data_cache = None
+
                 # Refresh the current page (stay on the page user is navigating)
                 # This will update all cards with new ComboBox options and button states
                 self._display_current_page()
@@ -1726,14 +1730,17 @@ class MainWindow(QMainWindow):
         return None
 
     def _load_store_software(self):
-        """Load software data from App_Store directory"""
+        """Load software data from App_Store directory (result is cached until a refresh clears it)"""
+        if self._store_data_cache is not None:
+            return self._store_data_cache
+
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
-        
+
         if not app_store_path.exists():
             return []
-        
+
         store_data = []
-        
+
         # Iterate through each folder in App_Store
         for folder in sorted(app_store_path.iterdir()):
             if not folder.is_dir():
@@ -1781,7 +1788,8 @@ class MainWindow(QMainWindow):
                 'folder_name': folder_name,
                 'folder_id': folder_id,
             })
-        
+
+        self._store_data_cache = store_data
         return store_data
     
     def _on_update_download(self, software_name, version, file_id):
