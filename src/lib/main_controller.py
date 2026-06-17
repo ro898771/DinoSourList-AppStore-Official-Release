@@ -1949,6 +1949,7 @@ class MainWindow(QMainWindow):
             self._finish_card_refresh(folder_name, success=False)
             return
 
+        self._update_record_json(item)
         self.status_label.setText(f"📝 Updating metadata for '{folder_name}'...")
 
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
@@ -2019,6 +2020,32 @@ class MainWindow(QMainWindow):
                     for version, file_id in card.versions_data:
                         card.version_combo.addItem(version, file_id)
 
+    def _update_record_json(self, item):
+        """Update the entry for a single app in record.json with fresh Box data."""
+        try:
+            if not self.record_file.exists():
+                return
+            with open(self.record_file, 'r', encoding='utf-8') as f:
+                record_data = json.load(f)
+
+            folder_name = item.get('name')
+            items = record_data.get('items', [])
+            for i, existing in enumerate(items):
+                if existing.get('name') == folder_name and existing.get('type') == 'folder':
+                    # Preserve top-level metadata fields, only overwrite contents
+                    items[i] = {**existing, **item}
+                    break
+            else:
+                # App not in record.json yet — append it
+                items.append(item)
+                record_data['item_count'] = len(items)
+
+            record_data['items'] = items
+            with open(self.record_file, 'w', encoding='utf-8') as f:
+                json.dump(record_data, f, indent=2)
+        except Exception as e:
+            print(f"[record.json] Failed to update entry for '{item.get('name')}': {e}")
+
     # ── Per-card refresh for Page 1 (Dashboard) ──────────────────────────────
 
     def _on_dashboard_card_refresh_clicked(self, folder_name, folder_id):
@@ -2056,6 +2083,7 @@ class MainWindow(QMainWindow):
             self._finish_dashboard_card_refresh(folder_name, success=False)
             return
 
+        self._update_record_json(item)
         self.status_label.setText(f"📝 Updating metadata for '{folder_name}'...")
 
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"

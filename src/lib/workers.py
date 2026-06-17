@@ -395,8 +395,11 @@ class DownloadInstallWorker(QObject):
         try:
             # CREATE_NEW_CONSOLE opens a visible cmd window so the user can
             # watch the installation output in real time.
+            # Use only the filename (not full path) so that cmd /c does not
+            # trip on spaces in the folder path.  cwd= sets the directory,
+            # so cmd finds the file in the current directory.
             proc = subprocess.Popen(
-                ['cmd', '/c', str(install_file)],
+                ['cmd', '/c', install_filename],
                 cwd=str(target_folder),
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
@@ -425,10 +428,18 @@ class DownloadInstallWorker(QObject):
             self.progress.emit(f"Initializing download for {self.software_name} {self.version}...")
             api = BoxLinkAPI()
             
-            # Create temp directory for download
+            # Create temp directory and wipe any leftover files before downloading
             temp_dir = Path("temp_download")
             temp_dir.mkdir(exist_ok=True)
-            
+            for leftover in temp_dir.iterdir():
+                try:
+                    if leftover.is_file():
+                        leftover.unlink()
+                    elif leftover.is_dir():
+                        shutil.rmtree(leftover)
+                except Exception as e:
+                    print(f"Warning: Could not remove leftover temp file {leftover}: {e}")
+
             # Download zip file
             self.progress.emit(f"Downloading {self.software_name} {self.version}...")
             

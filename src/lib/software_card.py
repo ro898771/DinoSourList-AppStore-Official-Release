@@ -353,42 +353,35 @@ class SoftwareCard(QFrame):
             return True
     
     def _load_versions(self):
-        """Load available versions from record.json"""
-        if not self.record_path.exists():
-            return
-        
+        """Load available versions from App_Store JSON (same source as _check_version_status)."""
         try:
-            with open(self.record_path, 'r', encoding='utf-8') as f:
-                record_data = json.load(f)
-            
-            # Parse folder name to get the software identifier
             parsed = parse_software_folder_name(self.folder_path.name)
             software_name = format_software_name(parsed)
             author = format_author(parsed).replace("by ", "")
-            
-            # Find matching folder in record.json
-            folder_key = f"{software_name}-{author}"
-            
-            for item in record_data.get('items', []):
-                if item.get('name') == folder_key and item.get('type') == 'folder':
-                    contents = item.get('contents', {})
-                    items = contents.get('items', [])
-                    
-                    # Extract version files (pattern: vX.X.X.X.zip)
-                    version_pattern = re.compile(r'^v(\d+)\.(\d+)\.(\d+)\.(\d+)\.zip$')
-                    
-                    for file_item in items:
-                        if file_item.get('type') == 'file':
-                            match = version_pattern.match(file_item.get('name', ''))
-                            if match:
-                                version = file_item['name'].replace('.zip', '')
-                                file_id = file_item['id']
-                                self.versions_data.append((version, file_id))
-                    
-                    # Sort versions (newest first)
-                    self.versions_data.sort(key=lambda x: [int(n) for n in x[0].replace('v', '').split('.')], reverse=True)
-                    break
-                    
+
+            app_store_folder = f"{software_name}-{author}"
+            json_path = Path("App_Store") / app_store_folder / f"{app_store_folder}.json"
+
+            if not json_path.exists():
+                return
+
+            with open(json_path, 'r', encoding='utf-8') as f:
+                store_data = json.load(f)
+
+            version_pattern = re.compile(r'^v(\d+\.\d+\.\d+\.\d+)\.zip$', re.IGNORECASE)
+
+            for file_item in store_data.get('files', []):
+                match = version_pattern.match(file_item.get('name', ''))
+                if match and file_item.get('id'):
+                    version = f"v{match.group(1)}"
+                    file_id = file_item['id']
+                    self.versions_data.append((version, file_id))
+
+            self.versions_data.sort(
+                key=lambda x: [int(n) for n in x[0].replace('v', '').split('.')],
+                reverse=True
+            )
+
         except Exception as e:
             print(f"Error loading versions: {e}")
     
