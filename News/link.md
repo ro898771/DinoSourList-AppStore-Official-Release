@@ -9,7 +9,3 @@ Click Here to know more: [WSD](https://sites.google.com/broadcom.com/wsd-penang-
 ## 🎫 Jira Ticket PENModule
 
 Click Here to know more: [PENModule](https://jira.broadcom.net/projects/PENMOD/issues/PENMOD-17?filter=allopenissues)
-
-## 📚 Information-center
-
-Click Here to know more: [information-center](https://sites.google.com/broadcom.com/wsd-pad-module/information-center)
