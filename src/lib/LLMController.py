@@ -284,20 +284,24 @@ class DinosaurVectorBot:
     def _extract_description(text: str) -> str:
         """Return the purpose line — supports both formats:
           New flat: PURPOSE: <description>
-          Old MD:   first sentence of ## Overview
+          Old MD:   first sentence of ## Objective (preferred) or ## Overview (fallback)
         """
-        in_overview = False
-        for line in text.splitlines():
+        lines = text.splitlines()
+        # New flat format takes priority
+        for line in lines:
             s = line.strip()
-            # New flat format
             if s.upper().startswith("PURPOSE:"):
                 return s.split(":", 1)[-1].strip()
-            # Old markdown format (fallback)
-            if s == "## Overview":
-                in_overview = True
-                continue
-            if in_overview and s and not s.startswith("#") and not s.startswith("-"):
-                return s.split(".")[0] + "."
+        # Old markdown: prefer ## Objective, fall back to ## Overview
+        for target in ("## Objective", "## Overview"):
+            in_section = False
+            for line in lines:
+                s = line.strip()
+                if s == target:
+                    in_section = True
+                    continue
+                if in_section and s and not s.startswith("#") and not s.startswith("-"):
+                    return s.split(".")[0] + "."
         return "A tool available in the WSD Dinosaur List."
 
     @staticmethod
