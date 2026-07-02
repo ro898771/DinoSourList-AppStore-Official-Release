@@ -7,10 +7,34 @@ import re
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List, Any
 
+# Shown to the user when BoxAutomate.exe cannot launch because the required
+# .NET runtime is missing on the machine.
+DOTNET_DOWNLOAD_URL = (
+    "https://aka.ms/dotnet-core-applaunch"
+    "?missing_runtime=true&arch=x64&rid=win10-x64&apphost_version=6.0.36"
+)
+
+
+def is_dotnet_missing_error(error: str) -> bool:
+    """
+    Return True if a BoxLinkAPI error string indicates the .NET runtime
+    required to launch BoxAutomate.exe is not installed on this machine.
+
+    Args:
+        error: The error text returned by BoxLinkAPI (stderr from the exe)
+
+    Returns:
+        bool: True if this looks like a missing-.NET-runtime failure
+    """
+    if not error:
+        return False
+    text = error.lower()
+    return "you must install .net" in text or ".net location: not found" in text
+
 
 class BoxLinkAPI:
     """Interface for interacting with BoxAutomate.exe"""
-    
+
     def __init__(self, exe_path: Optional[Path] = None):
         """
         Initialize BoxLink API

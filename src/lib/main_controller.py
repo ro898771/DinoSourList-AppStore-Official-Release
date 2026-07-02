@@ -31,7 +31,7 @@ except ImportError:
 
 from .software_card import SoftwareCard
 from .store_card import StoreCard
-from .boxlink_api import BoxLinkAPI
+from .boxlink_api import BoxLinkAPI, is_dotnet_missing_error, DOTNET_DOWNLOAD_URL
 from .app_controller import AppStoreDownloadWorker, SingleCardDownloadWorker
 from .workers import WorkerSignals, RefreshWorker, SingleCardRefreshWorker, CheckWorker, DownloadInstallWorker, DeleteWorker
 from .readme_viewer import ReadmeViewer
@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DinosaurList-V1.0.0.2")
+        self.setWindowTitle("DinosaurList-V1.0.0.3")
         _ico = Path(__file__).parent.parent.parent / "IcoFolder" / "main.ico"
         if _ico.exists():
             from PySide6.QtGui import QIcon
@@ -1374,10 +1374,28 @@ class MainWindow(QMainWindow):
         thread.daemon = True
         thread.start()
     
+    def _show_dotnet_missing_dialog(self):
+        """Prompt the user to install the .NET runtime required by BoxAutomate.exe."""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(".NET Runtime Required")
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setText(
+            "BoxAutomate.exe could not start because the required .NET runtime "
+            "is not installed on this computer.\n\n"
+            "Click \"Open Download Page\" to install it, then try again."
+        )
+        install_btn = msg_box.addButton("Open Download Page", QMessageBox.AcceptRole)
+        msg_box.addButton("Cancel", QMessageBox.RejectRole)
+        msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
+        msg_box.exec()
+
+        if msg_box.clickedButton() == install_btn:
+            webbrowser.open(DOTNET_DOWNLOAD_URL)
+
     def _on_refresh_complete(self, result):
         """Handle refresh completion (runs on main thread)"""
         success, data, error = result
-        
+
         try:
             if success:
                 # Ensure config-record directory exists
@@ -1410,6 +1428,8 @@ class MainWindow(QMainWindow):
             else:
                 self.status_label.setText(f"⚠️ Refresh failed: {error}")
                 self.hide_loading()
+                if is_dotnet_missing_error(error):
+                    self._show_dotnet_missing_dialog()
         except Exception as e:
             self.status_label.setText(f"⚠️ Error refreshing data: {str(e)}")
             self.hide_loading()
@@ -1947,6 +1967,8 @@ class MainWindow(QMainWindow):
         if not success:
             self.status_label.setText(f"⚠️ Sync failed for '{folder_name}': {error}")
             self._finish_card_refresh(folder_name, success=False)
+            if is_dotnet_missing_error(error):
+                self._show_dotnet_missing_dialog()
             return
 
         self._update_record_json(item)
@@ -2081,6 +2103,8 @@ class MainWindow(QMainWindow):
         if not success:
             self.status_label.setText(f"⚠️ Sync failed for '{folder_name}': {error}")
             self._finish_dashboard_card_refresh(folder_name, success=False)
+            if is_dotnet_missing_error(error):
+                self._show_dotnet_missing_dialog()
             return
 
         self._update_record_json(item)
