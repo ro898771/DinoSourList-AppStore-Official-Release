@@ -130,6 +130,9 @@ class MainWindow(QMainWindow):
         self.dashboard_folder_name_map = {} # folder_name → folder_path str (Page 1)
         self._store_data_cache = None       # cached result of _load_store_software(); None = stale
         self._llm_worker = _LLMWorker()     # worker created at startup; init deferred until dialog opens
+        self._busy_count = 0                # >0 while a refresh/download/install is in flight
+        self._status_owner_token = 0        # bumped by any user action that should pre-empt an in-flight async op's status text
+        self._ai_dialog = None              # AI Assistant dialog instance (kept non-modal)
 
         # Page names
         self.page_names = [
@@ -290,11 +293,22 @@ class MainWindow(QMainWindow):
         self.config_path = Path(__file__).parent.parent.parent / "config-record"
         self.record_file = self.config_path / "record.json"
         self.load_software()
+        # Pre-warm the Store page's data cache now, before the window is shown,
+        # so the first navigation to the Store tab doesn't pay for the App_Store
+        # scan — it just reads the already-populated cache.
+        self._load_store_software()
         # Apply correct visibility and placeholder for the initial page
         self._update_refresh_button_visibility()
 
     def _on_ai_assistant_clicked(self):
         """Open the AI Assistant dialog and wire it to the LLM worker."""
+
+        # If already open, just bring it to front instead of building a new one
+        if self._ai_dialog is not None:
+            self._ai_dialog.show()
+            self._ai_dialog.raise_()
+            self._ai_dialog.activateWindow()
+            return
 
         # ── Build dialog ─────────────────────────────────────────────────────
         dialog = QDialog(self)
@@ -684,7 +698,13 @@ class MainWindow(QMainWindow):
             )
             self._llm_init_thread.start()
 
-        dialog.exec()
+        # ── Show non-modally so the main window stays interactive ────────────
+        self._ai_dialog = dialog
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.finished.connect(lambda _: setattr(self, '_ai_dialog', None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def show_loading(self):
         """Show loading GIF animation"""
@@ -811,6 +831,41 @@ class MainWindow(QMainWindow):
         self._display_current_page()
         self._update_pagination_buttons()
     
+    @property
+    def _is_busy(self):
+        """True while a refresh/download/install worker is running in the background."""
+        return self._busy_count > 0
+
+    def _begin_busy_status(self):
+        """Mark a long-running operation as started.
+
+        While busy, tab navigation must not overwrite the live progress text
+        in status_label with the tab's generic summary message.
+        """
+        self._busy_count += 1
+
+    def _end_busy_status(self):
+        """Mark a long-running operation as finished.
+
+        Must be called after the operation's own completion handler has set
+        its final status text (e.g. "✓ Complete!"), so that text is preserved
+        instead of being immediately overwritten by a tab-summary refresh.
+        Once this reaches zero, tab navigation resumes updating status.setText.
+        """
+        self._busy_count = max(0, self._busy_count - 1)
+
+    def _claim_status_owner(self):
+        """Claim the status bar for a fresh, user-initiated action.
+
+        Returns a token. An async operation (e.g. delete) that captures a token when
+        it starts should compare it against the current owner before writing its own
+        progress/completion text — if a newer action (e.g. launching different software)
+        has claimed the status bar since, the stale write is skipped so it can't stomp
+        on what the user is looking at now.
+        """
+        self._status_owner_token += 1
+        return self._status_owner_token
+
     def _display_current_page(self):
         """Display content for the current page"""
         # Clear existing cards
@@ -899,12 +954,14 @@ class MainWindow(QMainWindow):
                 col = 0
                 row += 1
 
-        # Update status
-        total_count = len(self.all_software_data)
-        self.status_label.setText(
-            f"✓ Showing {total_count} software application(s) | {self.page_names[self.current_page]}"
-        )
-    
+        # Update status — skip while a refresh/download is in progress so we
+        # don't stomp on its live progress text (it's re-applied when done)
+        if not self._is_busy:
+            total_count = len(self.all_software_data)
+            self.status_label.setText(
+                f"✓ Showing {total_count} software application(s) | {self.page_names[self.current_page]}"
+            )
+
     def _display_store_page(self):
         """Display Software Store page (Page 2) with cards from App_Store"""
         # Load store software data
@@ -976,9 +1033,11 @@ class MainWindow(QMainWindow):
                 col = 0
                 row += 1
         
-        # Update status
-        total_software = len(store_data)
-        self.status_label.setText(f"🏪 {self.page_names[self.current_page]} - {total_software} software available")
+        # Update status — skip while a refresh/download is in progress so we
+        # don't stomp on its live progress text (it's re-applied when done)
+        if not self._is_busy:
+            total_software = len(store_data)
+            self.status_label.setText(f"🏪 {self.page_names[self.current_page]} - {total_software} software available")
     
     def _on_filter_changed(self, text: str):
         """Dispatch filter to the correct page handler."""
@@ -1101,9 +1160,10 @@ class MainWindow(QMainWindow):
             placeholder.setAlignment(Qt.AlignCenter)
             outer_layout.addWidget(placeholder)
             self.cards_layout.addWidget(outer, 0, 0, 1, 4)
-            self.status_label.setText(
-                f"📢 {self.page_names[self.current_page]} — No content"
-            )
+            if not self._is_busy:
+                self.status_label.setText(
+                    f"📢 {self.page_names[self.current_page]} — No content"
+                )
             return
 
         # Combine all md files into one HTML body
@@ -1219,10 +1279,11 @@ class MainWindow(QMainWindow):
 
         outer_layout.addWidget(browser)
         self.cards_layout.addWidget(outer, 0, 0, 1, 4)
-        self.status_label.setText(
-            f"📢 {self.page_names[self.current_page]} — {len(md_files)} file(s) loaded"
-        )
-    
+        if not self._is_busy:
+            self.status_label.setText(
+                f"📢 {self.page_names[self.current_page]} — {len(md_files)} file(s) loaded"
+            )
+
     def _display_useful_links_page(self):
         """Display Useful Links page — reads link.md from the project root and renders it."""
         link_file = Path(__file__).parent.parent.parent / "News" / "link.md"
@@ -1242,9 +1303,10 @@ class MainWindow(QMainWindow):
             placeholder.setAlignment(Qt.AlignCenter)
             outer_layout.addWidget(placeholder)
             self.cards_layout.addWidget(outer, 0, 0, 1, 4)
-            self.status_label.setText(
-                f"🔗 {self.page_names[self.current_page]} — No content"
-            )
+            if not self._is_busy:
+                self.status_label.setText(
+                    f"🔗 {self.page_names[self.current_page]} — No content"
+                )
             return
 
         try:
@@ -1355,14 +1417,16 @@ class MainWindow(QMainWindow):
 
         outer_layout.addWidget(browser)
         self.cards_layout.addWidget(outer, 0, 0, 1, 4)
-        self.status_label.setText(
-            f"🔗 {self.page_names[self.current_page]} — link.md loaded"
-        )
+        if not self._is_busy:
+            self.status_label.setText(
+                f"🔗 {self.page_names[self.current_page]} — link.md loaded"
+            )
 
     def refresh_data(self):
         """Refresh data from BoxLink API and save to record.json"""
         # Show loading indicator
         self.show_loading()
+        self._begin_busy_status()
         self.status_label.setText("🔄 Refreshing data from Box (scanning folders recursively)...")
         
         # Create worker
@@ -1428,12 +1492,14 @@ class MainWindow(QMainWindow):
             else:
                 self.status_label.setText(f"⚠️ Refresh failed: {error}")
                 self.hide_loading()
+                self._end_busy_status()
                 if is_dotnet_missing_error(error):
                     self._show_dotnet_missing_dialog()
         except Exception as e:
             self.status_label.setText(f"⚠️ Error refreshing data: {str(e)}")
             self.hide_loading()
-    
+            self._end_busy_status()
+
     def _download_to_app_store(self, data):
         """Create metadata JSON files in App_Store directory"""
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
@@ -1542,7 +1608,8 @@ class MainWindow(QMainWindow):
         finally:
             # Hide loading indicator
             self.hide_loading()
-    
+            self._end_busy_status()
+
     def check_version_status(self, folder_path):
         """
         Check if software version is latest by calling API
@@ -1749,6 +1816,54 @@ class MainWindow(QMainWindow):
         print(f"[ICON] [{app_store_folder.name}] no icon found")
         return None
 
+    def _build_store_entry(self, folder: Path):
+        """Build one App_Store entry (name/author/icon/json). Pure I/O + data —
+        safe to run off the UI thread, which is what lets _load_store_software
+        fan this out across a thread pool instead of scanning folders one at a time.
+        """
+        # Parse folder name to get software name and author
+        # Expected format: SoftwareName-Author or just SoftwareName
+        folder_name = folder.name
+
+        if '-' in folder_name:
+            # Split by last hyphen to handle names with hyphens
+            parts = folder_name.rsplit('-', 1)
+            software_name = parts[0]
+            author_name = parts[1] if len(parts) > 1 else "Unknown"
+        elif '@' in folder_name:
+            # Handle format like SbinValidation@master
+            parts = folder_name.split('@')
+            software_name = parts[0]
+            author_name = parts[1] if len(parts) > 1 else "Unknown"
+        else:
+            software_name = folder_name
+            author_name = "Unknown"
+
+        # Resolve icon via Flow.txt [Icon] Name=, fallback to icon.ico
+        icon_path = self._resolve_app_store_icon(folder)
+
+        # Look for JSON metadata file and read folder_id from it
+        json_path = folder / f"{folder_name}.json"
+        folder_id = ""
+        if json_path.exists():
+            try:
+                import json as _json
+                with open(json_path, 'r', encoding='utf-8') as _f:
+                    _meta = _json.load(_f)
+                folder_id = _meta.get('folder_id', '')
+            except Exception:
+                pass
+
+        return {
+            'name': software_name,
+            'author': author_name,
+            'icon_path': icon_path,  # already None if not found
+            'json_path': json_path if json_path.exists() else None,
+            'folder': folder,
+            'folder_name': folder_name,
+            'folder_id': folder_id,
+        }
+
     def _load_store_software(self):
         """Load software data from App_Store directory (result is cached until a refresh clears it)"""
         if self._store_data_cache is not None:
@@ -1759,55 +1874,18 @@ class MainWindow(QMainWindow):
         if not app_store_path.exists():
             return []
 
-        store_data = []
+        folders = [f for f in sorted(app_store_path.iterdir()) if f.is_dir()]
 
-        # Iterate through each folder in App_Store
-        for folder in sorted(app_store_path.iterdir()):
-            if not folder.is_dir():
-                continue
-            
-            # Parse folder name to get software name and author
-            # Expected format: SoftwareName-Author or just SoftwareName
-            folder_name = folder.name
-            
-            if '-' in folder_name:
-                # Split by last hyphen to handle names with hyphens
-                parts = folder_name.rsplit('-', 1)
-                software_name = parts[0]
-                author_name = parts[1] if len(parts) > 1 else "Unknown"
-            elif '@' in folder_name:
-                # Handle format like SbinValidation@master
-                parts = folder_name.split('@')
-                software_name = parts[0]
-                author_name = parts[1] if len(parts) > 1 else "Unknown"
-            else:
-                software_name = folder_name
-                author_name = "Unknown"
-            
-            # Resolve icon via Flow.txt [Icon] Name=, fallback to icon.ico
-            icon_path = self._resolve_app_store_icon(folder)
+        if not folders:
+            self._store_data_cache = []
+            return self._store_data_cache
 
-            # Look for JSON metadata file and read folder_id from it
-            json_path = folder / f"{folder_name}.json"
-            folder_id = ""
-            if json_path.exists():
-                try:
-                    import json as _json
-                    with open(json_path, 'r', encoding='utf-8') as _f:
-                        _meta = _json.load(_f)
-                    folder_id = _meta.get('folder_id', '')
-                except Exception:
-                    pass
-
-            store_data.append({
-                'name': software_name,
-                'author': author_name,
-                'icon_path': icon_path,  # already None if not found
-                'json_path': json_path if json_path.exists() else None,
-                'folder': folder,
-                'folder_name': folder_name,
-                'folder_id': folder_id,
-            })
+        # Each folder's work is a handful of small file reads (Flow.txt, icon
+        # existence checks, JSON) — I/O-bound, so a thread pool scans folders
+        # concurrently instead of paying each folder's disk latency in series.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(16, len(folders))) as pool:
+            store_data = list(pool.map(self._build_store_entry, folders))
 
         self._store_data_cache = store_data
         return store_data
@@ -1945,6 +2023,7 @@ class MainWindow(QMainWindow):
             card.set_refreshing(True)
 
         self.show_loading()
+        self._begin_busy_status()
         self.status_label.setText(f"🔄 Syncing '{folder_name}' from Box...")
 
         # Keep strong references so the workers are not garbage-collected
@@ -2008,6 +2087,7 @@ class MainWindow(QMainWindow):
     def _finish_card_refresh(self, folder_name, success=True):
         """Re-enable the card's refresh button and refresh only that card's UI."""
         self.hide_loading()
+        self._end_busy_status()
 
         card = getattr(self, 'store_card_references', {}).get(folder_name)
         if card:
@@ -2084,6 +2164,7 @@ class MainWindow(QMainWindow):
             card.set_refreshing(True)
 
         self.show_loading()
+        self._begin_busy_status()
         self.status_label.setText(f"🔄 Syncing '{folder_name}' from Box...")
 
         self._dash_scan_worker = SingleCardRefreshWorker(
@@ -2134,6 +2215,7 @@ class MainWindow(QMainWindow):
     def _finish_dashboard_card_refresh(self, folder_name, success=True):
         """Re-enable the card button and live-update icon + version badge."""
         self.hide_loading()
+        self._end_busy_status()
 
         folder_path_str = self.dashboard_folder_name_map.get(folder_name)
         card = self.card_references.get(folder_path_str) if folder_path_str else None
@@ -2190,10 +2272,11 @@ class MainWindow(QMainWindow):
         
         # Start download in background thread
         self.status_label.setText(f"📥 Downloading {software_name} {version}...")
-        
+
         # Show loading GIF
         self.show_loading()
-        
+        self._begin_busy_status()
+
         self.download_worker = DownloadInstallWorker(
             software_name=software_name,
             author_name=author_name,
@@ -2227,7 +2310,8 @@ class MainWindow(QMainWindow):
             
             # Refresh the current page display (stay on current page)
             self._display_current_page()
-            
+            self._end_busy_status()
+
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Installation Complete")
             msg_box.setIcon(QMessageBox.Information)
@@ -2237,6 +2321,7 @@ class MainWindow(QMainWindow):
             msg_box.exec()
         else:
             self.status_label.setText(f"❌ {message}")
+            self._end_busy_status()
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Installation Failed")
             msg_box.setIcon(QMessageBox.Critical)
@@ -2274,6 +2359,11 @@ class MainWindow(QMainWindow):
         identical behaviour to double-clicking the file in Explorer.
         """
         import subprocess
+
+        # Claim the status bar so a stale progress/completion callback from an
+        # older background op (e.g. a delete still finishing up) can't overwrite
+        # the launch feedback this action is about to show.
+        self._claim_status_owner()
 
         print(f"\n{'='*60}")
         print(f"[LAUNCH] Requested folder_path : {folder_path}")
@@ -2400,32 +2490,44 @@ class MainWindow(QMainWindow):
 
         # ── Show immediate feedback and block further interactions ────────────
         self.show_loading()
+        token = self._claim_status_owner()
         self.status_label.setText(f"🗑️ Deleting '{folder.name}'…  Please wait.")
         self.refresh_btn.setEnabled(False)
 
         # ── Run deletion in background ────────────────────────────────────────
         worker = DeleteWorker(str(folder))
-        worker.progress.connect(lambda msg: self.status_label.setText(f"🗑️ {msg}"))
-        worker.finished.connect(self._on_delete_complete)
+        worker.progress.connect(lambda msg: self._set_status_if_current(token, f"🗑️ {msg}"))
+        worker.finished.connect(lambda success, message: self._on_delete_complete(token, success, message))
 
         thread = Thread(target=worker.run, daemon=True)
         thread.start()
 
-    def _on_delete_complete(self, success: bool, message: str):
+    def _set_status_if_current(self, token, text):
+        """Write to status_label only if *token* still owns the status bar.
+
+        Prevents a stale async callback (e.g. delete progress) from overwriting
+        text set by a newer action the user took in the meantime (e.g. launching
+        a different app) — see _claim_status_owner.
+        """
+        if token == self._status_owner_token:
+            self.status_label.setText(text)
+
+    def _on_delete_complete(self, token, success: bool, message: str):
         """Called on the main thread when background deletion finishes.
 
         Always refreshes the card list so the card is removed from the UI
-        regardless of whether the worker reported success or failure.
+        regardless of whether the worker reported success or failure, but only
+        touches status_label if nothing newer has claimed it since delete started.
         """
         self.hide_loading()
         self.refresh_btn.setEnabled(True)
 
         if success:
             folder_name = message  # worker emits folder.name on success
-            self.status_label.setText(f"✅ Deleted '{folder_name}' successfully.")
+            self._set_status_if_current(token, f"✅ Deleted '{folder_name}' successfully.")
         else:
             # Still refresh — the folder may be gone even if the worker hit an error
-            self.status_label.setText("⚠️ Delete encountered issues — refreshing list.")
+            self._set_status_if_current(token, "⚠️ Delete encountered issues — refreshing list.")
             print(f"[DELETE] Non-fatal error reported: {message}")
 
         # Always reload so the card disappears if the folder is gone
