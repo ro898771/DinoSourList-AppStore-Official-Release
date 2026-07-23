@@ -1820,9 +1820,10 @@ class MainWindow(QMainWindow):
 
         Tracks who uses DinosaurList itself — distinct from _sync_installed_tools,
         which tracks which tools a user has installed. Looks the user up first
-        (GET) and only POSTs a new record if they're not already there, so
-        repeated launches don't create duplicate rows. Never raises -- an
-        unreachable API must not block launch.
+        (GET); if a record already exists, DELETEs it and POSTs a new one so
+        both its IP and datetime reflect this launch (the backend only stamps
+        datetime on create -- PUT leaves it unchanged), otherwise just POSTs a
+        new record. Never raises -- an unreachable API must not block launch.
         """
         self._ensure_user_api_on_path()
         try:
@@ -1838,7 +1839,12 @@ class MainWindow(QMainWindow):
             already_registered = bool(ok and rows)
 
             if already_registered:
-                self._append_launch_log(f"INSTALLED-CHECK user={username} ip={ip} status=already_registered")
+                record_id = rows[0].get("id")
+                client.delete(record_id)
+                post_ok, _ = client.create(user_name=username, ip_address=ip)
+                self._append_launch_log(
+                    f"INSTALLED-CHECK user={username} ip={ip} status=refreshed POST_ok={post_ok}"
+                )
             else:
                 post_ok, _ = client.create(user_name=username, ip_address=ip)
                 self._append_launch_log(
@@ -2653,17 +2659,44 @@ class MainWindow(QMainWindow):
 
         # ── Show immediate feedback and block further interactions ────────────
         self.show_loading()
+        self._begin_busy_status()
         token = self._claim_status_owner()
         self.status_label.setText(f"🗑️ Deleting '{folder.name}'…  Please wait.")
         self.refresh_btn.setEnabled(False)
 
         # ── Run deletion in background ────────────────────────────────────────
-        worker = DeleteWorker(str(folder))
-        worker.progress.connect(lambda msg: self._set_status_if_current(token, f"🗑️ {msg}"))
-        worker.finished.connect(lambda success, message: self._on_delete_complete(token, success, message))
+        # Keep worker/thread on self -- local variables here would be the only
+        # Python reference once this method returns, so the worker could be
+        # garbage-collected right as it finishes, dropping the queued
+        # cross-thread `finished` signal before the UI ever sees it (the
+        # delete itself still succeeds on disk, but the GIF/status hang forever).
+        self._delete_worker = DeleteWorker(str(folder))
+        self._delete_worker.progress.connect(lambda msg: self._set_status_if_current(token, f"🗑️ {msg}"))
+        self._delete_worker.finished.connect(
+            lambda success, message: self._on_delete_complete(str(folder), success, message)
+        )
 
-        thread = Thread(target=worker.run, daemon=True)
-        thread.start()
+        self._delete_thread = Thread(target=self._delete_worker.run, daemon=True)
+        self._delete_thread.start()
+
+        # shutil.rmtree gives no per-file progress, so a large folder can sit on
+        # one status line for a long time with nothing visibly changing -- tick
+        # the text every second so it doesn't look like the app has hung.
+        self._delete_elapsed_seconds = 0
+        self._delete_heartbeat_timer = QTimer(self)
+        self._delete_heartbeat_timer.setInterval(1000)
+        self._delete_heartbeat_timer.timeout.connect(
+            lambda: self._on_delete_heartbeat(token, folder.name)
+        )
+        self._delete_heartbeat_timer.start()
+
+    def _on_delete_heartbeat(self, token, folder_name):
+        """Tick the status bar once a second while a delete is in progress."""
+        self._delete_elapsed_seconds += 1
+        dots = "." * ((self._delete_elapsed_seconds % 3) + 1)
+        self._set_status_if_current(
+            token, f"🗑️ Deleting '{folder_name}'{dots}  ({self._delete_elapsed_seconds}s)"
+        )
 
     def _set_status_if_current(self, token, text):
         """Write to status_label only if *token* still owns the status bar.
@@ -2675,27 +2708,109 @@ class MainWindow(QMainWindow):
         if token == self._status_owner_token:
             self.status_label.setText(text)
 
-    def _on_delete_complete(self, token, success: bool, message: str):
+    def _on_delete_complete(self, folder_path_str, success: bool, message: str):
         """Called on the main thread when background deletion finishes.
 
-        Always refreshes the card list so the card is removed from the UI
-        regardless of whether the worker reported success or failure, but only
-        touches status_label if nothing newer has claimed it since delete started.
+        The folder's existence on disk (not the worker's self-reported success
+        flag) decides the UI update: if it's gone, the card is removed
+        immediately without waiting on a full Software_Downloaded re-scan;
+        otherwise a full reload runs so the dashboard still reflects reality.
+        Busy status is released in a finally block so a failure while updating
+        the UI can't leave it stuck for every action after this one.
         """
         self.hide_loading()
         self.refresh_btn.setEnabled(True)
 
-        if success:
-            folder_name = message  # worker emits folder.name on success
-            self._set_status_if_current(token, f"✅ Deleted '{folder_name}' successfully.")
-        else:
-            # Still refresh — the folder may be gone even if the worker hit an error
-            self._set_status_if_current(token, "⚠️ Delete encountered issues — refreshing list.")
+        if getattr(self, "_delete_heartbeat_timer", None) is not None:
+            self._delete_heartbeat_timer.stop()
+            self._delete_heartbeat_timer = None
+
+        folder_gone = not Path(folder_path_str).exists()
+        folder_name = Path(folder_path_str).name
+
+        if not success and not folder_gone:
             print(f"[DELETE] Non-fatal error reported: {message}")
 
-        # Always reload so the card disappears if the folder is gone
-        self.load_software(reset_page=False)
-        self._display_current_page()
+        try:
+            if folder_gone:
+                self._remove_dashboard_card(folder_path_str)
+            else:
+                self.load_software(reset_page=False)
+                self._display_current_page()
+        except Exception as exc:
+            print(f"[DELETE] UI refresh after delete failed: {exc}")
+        finally:
+            self._end_busy_status()
+
+        if folder_gone:
+            self.status_label.setText(f"✅ Deleted '{folder_name}' successfully.")
+        else:
+            self.status_label.setText(f"⚠️ Could not delete '{folder_name}' — see console log.")
+
+        # Re-sync the tool_list from the current (post-delete) folder state --
+        # UserToolsClient has no "remove one key" call, so a full re-scan + POST
+        # replace is how a deletion gets reflected server-side. Run unconditionally
+        # (not just on success) since the folder is confirmed gone either way.
+        self._sync_installed_tools("delete")
+
+    def _remove_dashboard_card(self, folder_path_str):
+        """Remove a single card from the Dashboard grid without a full re-scan.
+
+        Called once a deleted folder is confirmed gone from disk, so the card
+        disappears immediately instead of waiting on _sync_installed_tools /
+        a fresh load_software() pass. Keeps card_references, all_software_data,
+        and dashboard_folder_name_map in sync so a later reload stays consistent.
+        """
+        card = self.card_references.pop(folder_path_str, None)
+
+        stale_keys = [k for k, v in self.dashboard_folder_name_map.items() if v == folder_path_str]
+        for k in stale_keys:
+            del self.dashboard_folder_name_map[k]
+
+        self.all_software_data = [
+            sw for sw in self.all_software_data if str(sw['folder']) != folder_path_str
+        ]
+
+        if card is None:
+            return
+
+        self.cards_layout.removeWidget(card)
+        card.setParent(None)
+        card.deleteLater()
+
+        if self.current_page != 0:
+            return
+
+        # Re-pack the remaining cards (respecting any active search filter)
+        # into a compact 4-column grid.
+        while self.cards_layout.count():
+            self.cards_layout.takeAt(0)
+
+        filter_text = self.filter_edit.text()
+        row = col = 0
+        matched = 0
+        for remaining_card in self.card_references.values():
+            if self._matches_filter(remaining_card.display_name, filter_text):
+                self.cards_layout.addWidget(remaining_card, row, col)
+                remaining_card.show()
+                matched += 1
+                col += 1
+                if col >= 4:
+                    col = 0
+                    row += 1
+            else:
+                remaining_card.hide()
+
+        if not self._is_busy:
+            total = len(self.card_references)
+            if filter_text.strip():
+                self.status_label.setText(
+                    f"🔍 '{filter_text.strip()}' — {matched} of {total} installed software matched"
+                )
+            else:
+                self.status_label.setText(
+                    f"✓ Showing {total} software application(s) | {self.page_names[0]}"
+                )
 
     def show_version_info(self, folder_path):
         """Show version information from README.md (triggered by version label)"""
