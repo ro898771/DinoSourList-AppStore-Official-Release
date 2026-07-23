@@ -297,6 +297,8 @@ class MainWindow(QMainWindow):
         # so the first navigation to the Store tab doesn't pay for the App_Store
         # scan — it just reads the already-populated cache.
         self._load_store_software()
+        self._sync_installed_tools("launch")
+        self._register_app_user()
         # Apply correct visibility and placeholder for the initial page
         self._update_refresh_button_visibility()
 
@@ -1767,7 +1769,160 @@ class MainWindow(QMainWindow):
             self.current_page = 0
             self._display_current_page()
             self._update_pagination_buttons()
-    
+
+    def _build_installed_tool_list(self):
+        """Scan Software_Downloaded and return {software_name: version} for every folder.
+
+        Folder names follow Name-V-Version_A-Author (see folder_parser); the same
+        parser the Dashboard cards use resolves name/version so this list matches
+        what's actually shown to the user.
+        """
+        from .folder_parser import parse_software_folder_name, format_software_name, get_version_raw
+
+        tool_list = {}
+        if not self.software_path.exists():
+            return tool_list
+
+        for folder in sorted(self.software_path.iterdir()):
+            if not folder.is_dir():
+                continue
+            parsed = parse_software_folder_name(folder.name)
+            name = format_software_name(parsed)
+            tool_list[name] = get_version_raw(parsed)
+
+        return tool_list
+
+    def _ensure_user_api_on_path(self):
+        """Make the top-level User-API folder importable (health_client, local_identity,
+        info_details, the *_client modules) -- they aren't a package under src/."""
+        import sys
+        user_api_dir = str(Path(__file__).parent.parent.parent / "User-API")
+        if user_api_dir not in sys.path:
+            sys.path.insert(0, user_api_dir)
+
+    def _append_launch_log(self, line):
+        """Append one timestamped line to today's Log_data/launch_<date>.log.
+
+        Best-effort -- logging failures must never surface to the caller.
+        """
+        try:
+            from datetime import datetime
+            log_dir = Path(__file__).parent.parent.parent / "Log_data"
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / f"launch_{datetime.now():%Y-%m-%d}.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {line}\n")
+        except OSError:
+            pass
+
+    def _register_app_user(self):
+        """Make sure this machine's user is recorded via InfoInstalledClient (db0).
+
+        Tracks who uses DinosaurList itself — distinct from _sync_installed_tools,
+        which tracks which tools a user has installed. Looks the user up first
+        (GET) and only POSTs a new record if they're not already there, so
+        repeated launches don't create duplicate rows. Never raises -- an
+        unreachable API must not block launch.
+        """
+        self._ensure_user_api_on_path()
+        try:
+            from local_identity import LocalIdentity
+            from info_installed_client import InfoInstalledClient
+
+            identity = LocalIdentity()
+            username = identity.get_current_username()
+            ip = identity.get_local_ip()
+
+            client = InfoInstalledClient()
+            ok, rows = client.list(user_name=username)
+            already_registered = bool(ok and rows)
+
+            if already_registered:
+                self._append_launch_log(f"INSTALLED-CHECK user={username} ip={ip} status=already_registered")
+            else:
+                post_ok, _ = client.create(user_name=username, ip_address=ip)
+                self._append_launch_log(
+                    f"INSTALLED-CHECK user={username} ip={ip} status=registered POST_ok={post_ok}"
+                )
+        except Exception as exc:
+            self._append_launch_log(f"INSTALLED-CHECK failed: {exc}")
+
+    def _report_tool_checkin(self, tool_name, version):
+        """Report a successful download/update via POST /api/info/details/.
+
+        Only call this once a download has actually succeeded — this feeds the
+        Telemetry API's tool check-in stats, so a failed/cancelled download must
+        not be recorded. Never raises -- an unreachable API shouldn't disrupt
+        the already-completed install.
+        """
+        self._ensure_user_api_on_path()
+        try:
+            from info_details import report_tool_checkin
+
+            ok, _ = report_tool_checkin(tool_name, version)
+            print(f"[INFO-DETAILS] tool={tool_name} version={version} POST ok={ok}")
+        except Exception as exc:
+            print(f"[INFO-DETAILS] failed for tool={tool_name} version={version}: {exc}")
+
+    def _update_tool_list_entry(self, tool_name, version):
+        """PUT the just-downloaded tool/version into the user's tool_list right away,
+        via UserToolsClient.update(), instead of waiting for the next launch/close
+        full re-scan (_sync_installed_tools) to pick it up.
+
+        Mirrors the server's merged response into config-record/api.json so the
+        local file matches what's actually stored. Never raises -- an unreachable
+        API must not disrupt the already-completed install.
+        """
+        self._ensure_user_api_on_path()
+        try:
+            from local_identity import LocalIdentity
+            from user_tools_client import UserToolsClient
+
+            username = LocalIdentity().get_current_username()
+            ok, data = UserToolsClient().update(username, {tool_name: version})
+            print(f"[TOOL-SYNC:download] user={username} tool={tool_name} version={version} PUT ok={ok}")
+
+            if ok and data:
+                api_json_path = self.config_path / "api.json"
+                with open(api_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(
+                        {"user_name": data.get("user_name", username), "tool_list": data.get("tool_list", {})},
+                        f, indent=2,
+                    )
+        except Exception as exc:
+            print(f"[TOOL-SYNC:download] failed for tool={tool_name} version={version}: {exc}")
+
+    def _sync_installed_tools(self, event_label="launch"):
+        """Write config-record/api.json and POST it via UserToolsClient.
+
+        api.json mirrors the exact payload UserToolsClient.create() sends --
+        {"user_name": ..., "tool_list": {...}} -- so it doubles as a local
+        record of the last sync. Called on launch and again on close (re-scanned
+        each time, since software may have been installed/removed mid-session).
+        Never raises -- the Telemetry API being unreachable shouldn't block
+        launch or exit.
+        """
+        self._ensure_user_api_on_path()
+
+        tool_list = self._build_installed_tool_list()
+
+        try:
+            from local_identity import LocalIdentity
+            from user_tools_client import UserToolsClient
+
+            identity = LocalIdentity()
+            username = identity.get_current_username()
+            ip = identity.get_local_ip()
+
+            api_json_path = self.config_path / "api.json"
+            with open(api_json_path, 'w', encoding='utf-8') as f:
+                json.dump({"user_name": username, "tool_list": tool_list}, f, indent=2)
+
+            ok, _ = UserToolsClient().create(username, tool_list)
+            print(f"[TOOL-SYNC:{event_label}] user={username} ip={ip} tools={len(tool_list)} POST ok={ok}")
+        except Exception as exc:
+            print(f"[TOOL-SYNC:{event_label}] failed: {exc}")
+
     def _resolve_app_store_icon(self, app_store_folder: Path):
         """Return the icon Path for an App_Store folder by reading Flow.txt [Icon].
 
@@ -2304,7 +2459,15 @@ class MainWindow(QMainWindow):
         
         if success:
             self.status_label.setText(f"✅ {message}")
-            
+
+            # Report the check-in and refresh the tool_list entry only now that the
+            # download actually succeeded — a failed/cancelled download shouldn't be
+            # recorded as tool usage. Covers all three trigger points (Store tab's
+            # Download button, Dashboard's Update/Latest button) since they all funnel
+            # through this same completion handler.
+            self._report_tool_checkin(self.download_worker.software_name, self.download_worker.version)
+            self._update_tool_list_entry(self.download_worker.software_name, self.download_worker.version)
+
             # Auto-refresh software data to show newly installed software (without changing page)
             self.load_software(reset_page=False)
             
@@ -2764,6 +2927,7 @@ class MainWindow(QMainWindow):
         reply = msg_box.exec()
         
         if reply == QMessageBox.Yes:
+            self._sync_installed_tools("close")
             event.accept()
         else:
             event.ignore()

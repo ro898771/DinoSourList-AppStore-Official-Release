@@ -9,7 +9,9 @@ dependencies = [
     "nltk>=3.9",
     "pandas>=3.0.3",
     "pyside6==6.8.0.2",
+    "python-dotenv>=1.2.2",
     "pywin32>=311",
+    "requests>=2.34.2",
 ]
 
 [tool.uv]
