@@ -2,9 +2,11 @@
   "user_name": "ro898771",
   "tool_list": {
     "PADMA": "1.2.0.0",
-    "QuickMi2e": "v8.2.0.1",
+    "QuickMi2e": "9.0.0.0",
+    "BandMaster": "1.0.0.3",
+    "Data Mapping": "1.0.0.0",
+    "Dinosaur-List": "1.0.0.4",
     "GU Validation": "1.0.0.0",
-    "#Python@Deployment": "1.0.0.1",
-    "Module Power Tools": "1.0.0.1"
+    "Module Power Tools": "v1.2.0.0"
   }
 }

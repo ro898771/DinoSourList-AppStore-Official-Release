@@ -1521,12 +1521,14 @@ class MainWindow(QMainWindow):
                 self._download_to_app_store(data)
             else:
                 self.status_label.setText(f"⚠️ Refresh failed: {error}")
+                self._report_log(f"Refresh failed: {error}")
                 self.hide_loading()
                 self._end_busy_status()
                 if is_dotnet_missing_error(error):
                     self._show_dotnet_missing_dialog()
         except Exception as e:
             self.status_label.setText(f"⚠️ Error refreshing data: {str(e)}")
+            self._report_log(f"Error refreshing data: {e}")
             self.hide_loading()
             self._end_busy_status()
 
@@ -1633,8 +1635,10 @@ class MainWindow(QMainWindow):
                 self._display_current_page()
             else:
                 self.status_label.setText(f"⚠️ Metadata creation failed: {message}")
+                self._report_log(f"Metadata creation failed: {message}")
         except Exception as e:
             self.status_label.setText(f"⚠️ Error: {str(e)}")
+            self._report_log(f"Metadata creation error: {e}")
         finally:
             # Hide loading indicator
             self.hide_loading()
@@ -1959,6 +1963,36 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             print(f"[TOOL-SYNC:{event_label}] FAILED: {exc}")
 
+    def _report_log(self, log_content, level="ERROR"):
+        """POST a timestamped line to the Telemetry API's Info/Logs feature (db4).
+
+        Centralizes visibility into app errors instead of leaving them only in
+        each user's local console/Log_data file. The server also stamps its own
+        "datetime" column on create, but the timestamp is embedded in log_content
+        too so it reads clearly on its own when someone is just skimming raw log
+        text. Never raises -- an unreachable API must not disrupt whatever was
+        already happening when this was called.
+        """
+        self._ensure_user_api_on_path()
+        try:
+            from datetime import datetime
+            from local_identity import LocalIdentity
+            from info_logs_client import InfoLogsClient
+
+            identity = LocalIdentity()
+            stamped_content = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{level}] {log_content}"
+
+            ok, _ = InfoLogsClient().create(
+                tool_name=self.app_version_info["app_name"],
+                version=self.app_version_info["version"],
+                user_name=identity.get_current_username(),
+                ip_address=identity.get_local_ip(),
+                log_content=stamped_content,
+            )
+            print(f"[INFO-LOGS:{level}] {'OK' if ok else 'FAILED'}")
+        except Exception as exc:
+            print(f"[INFO-LOGS:{level}] FAILED: {exc}")
+
     def _resolve_app_store_icon(self, app_store_folder: Path):
         """Return the icon Path for an App_Store folder by reading Flow.txt [Icon].
 
@@ -2236,6 +2270,7 @@ class MainWindow(QMainWindow):
 
         if not success:
             self.status_label.setText(f"⚠️ Sync failed for '{folder_name}': {error}")
+            self._report_log(f"Sync failed for '{folder_name}': {error}")
             self._finish_card_refresh(folder_name, success=False)
             if is_dotnet_missing_error(error):
                 self._show_dotnet_missing_dialog()
@@ -2374,6 +2409,7 @@ class MainWindow(QMainWindow):
 
         if not success:
             self.status_label.setText(f"⚠️ Sync failed for '{folder_name}': {error}")
+            self._report_log(f"Sync failed for '{folder_name}': {error}")
             self._finish_dashboard_card_refresh(folder_name, success=False)
             if is_dotnet_missing_error(error):
                 self._show_dotnet_missing_dialog()
@@ -2401,6 +2437,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"✓ '{folder_name}' synced! ({message})")
         else:
             self.status_label.setText(f"⚠️ Sync incomplete for '{folder_name}': {message}")
+            self._report_log(f"Sync incomplete for '{folder_name}': {message}")
         self._finish_dashboard_card_refresh(folder_name, success=success)
 
     def _finish_dashboard_card_refresh(self, folder_name, success=True):
@@ -2520,6 +2557,7 @@ class MainWindow(QMainWindow):
             msg_box.exec()
         else:
             self.status_label.setText(f"❌ {message}")
+            self._report_log(f"Installation failed: {message}")
             self._end_busy_status()
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Installation Failed")
@@ -2639,16 +2677,19 @@ class MainWindow(QMainWindow):
                         self.status_label.setText(f"🚀 Launched {Path(folder_path).name} (elevated)")
                     except Exception as e2:
                         print(f"[LAUNCH] Elevated launch failed: {e2}")
+                        self._report_log(f"Elevated launch failed for '{folder_path}': {e2}")
                         QMessageBox.critical(
                             self, "Launch Error",
                             f"'{exec_path.name}' requires administrator privileges.\n\n"
                             f"UAC elevation failed:\n{str(e2)}"
                         )
                 else:
+                    self._report_log(f"Launch failed for '{folder_path}': {e}")
                     QMessageBox.critical(self, "Launch Error", f"Failed to launch:\n{str(e)}")
         else:
             reason = "exec_path is None" if not exec_path else f"file not found: {exec_path}"
             print(f"[LAUNCH] ABORTED             : {reason}")
+            self._report_log(f"Launch aborted for '{folder_path}': {reason}")
             QMessageBox.warning(
                 self,
                 "Launch Error",
@@ -2760,6 +2801,7 @@ class MainWindow(QMainWindow):
 
         if not success and not folder_gone:
             print(f"[DELETE] Non-fatal error reported: {message}")
+            self._report_log(f"Delete failed for '{folder_name}': {message}")
 
         try:
             if folder_gone:
@@ -2769,6 +2811,7 @@ class MainWindow(QMainWindow):
                 self._display_current_page()
         except Exception as exc:
             print(f"[DELETE] UI refresh after delete failed: {exc}")
+            self._report_log(f"UI refresh after delete failed for '{folder_name}': {exc}")
         finally:
             self._end_busy_status()
 
@@ -3051,8 +3094,9 @@ class MainWindow(QMainWindow):
                 msg_box.setIcon(QMessageBox.Critical)
                 msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
                 msg_box.exec()
-                
+
                 self.status_label.setText(f"❌ Failed to check {software_name}")
+                self._report_log(f"Version check failed for '{software_name}': {message}")
         finally:
             # Hide loading indicator
             self.hide_loading()

@@ -319,15 +319,18 @@ class SoftwareCard(QFrame):
             with open(json_path, 'r', encoding='utf-8') as f:
                 store_data = json.load(f)
             
-            # Extract all version files
-            version_pattern = re.compile(r'^v(\d+)\.(\d+)\.(\d+)\.(\d+)\.zip$')
+            # Extract all version files. Box entries are inconsistently cased
+            # ("v1.0.0.1.zip" vs "V1.2.0.0.zip") -- IGNORECASE (matching
+            # _load_versions() below) is required or newer uppercase-named
+            # releases are silently skipped and this reports stale installs as
+            # already up to date.
+            version_pattern = re.compile(r'^v(\d+\.\d+\.\d+\.\d+)\.zip$', re.IGNORECASE)
             versions = []
-            
+
             for file_item in store_data.get('files', []):
                 match = version_pattern.match(file_item.get('name', ''))
                 if match:
-                    version_str = file_item['name'].replace('v', '').replace('.zip', '')
-                    versions.append(version_str)
+                    versions.append(match.group(1))
             
             if not versions:
                 # No versions found, assume latest

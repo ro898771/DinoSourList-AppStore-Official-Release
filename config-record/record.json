@@ -505,7 +505,7 @@
       "modified_by": null,
       "contents": {
         "folder_id": "380219190867",
-        "total_items": 9,
+        "total_items": 10,
         "items": [
           {
             "type": "folder",
@@ -513,7 +513,7 @@
             "name": "User_Guide",
             "contents": {
               "folder_id": "399585304173",
-              "total_items": 10,
+              "total_items": 11,
               "items": [
                 {
                   "type": "folder",
@@ -588,6 +588,11 @@
                 },
                 {
                   "type": "file",
+                  "id": "2365399734912",
+                  "name": "Interactive Plotter.docx"
+                },
+                {
+                  "type": "file",
                   "id": "2345387766788",
                   "name": "Monte Carlo.docx"
                 },
@@ -613,7 +618,7 @@
                 }
               ],
               "summary": {
-                "files": 9,
+                "files": 10,
                 "folders": 1
               },
               "status": "SUCCESS"
@@ -658,10 +663,15 @@
             "type": "file",
             "id": "2343936601421",
             "name": "V1.1.1.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2365375168617",
+            "name": "V1.2.0.0.zip"
           }
         ],
         "summary": {
-          "files": 8,
+          "files": 9,
           "folders": 1
         },
         "status": "SUCCESS"
@@ -901,7 +911,7 @@
           },
           {
             "type": "file",
-            "id": "2345625002349",
+            "id": "2365054642987",
             "name": "v9.0.0.0.zip"
           }
         ],
