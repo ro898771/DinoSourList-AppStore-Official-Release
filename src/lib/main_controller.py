@@ -110,7 +110,8 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DinosaurList-V1.0.0.3")
+        self.app_version_info = self._load_app_version()
+        self.setWindowTitle(f"{self.app_version_info['app_name']}-{self.app_version_info['version']}")
         _ico = Path(__file__).parent.parent.parent / "IcoFolder" / "main.ico"
         if _ico.exists():
             from PySide6.QtGui import QIcon
@@ -286,6 +287,9 @@ class MainWindow(QMainWindow):
         # Status - Black text
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        # Selectable so the user can copy the text (e.g. an error message) for debugging
+        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.status_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(self.status_label)
         
         # Load software
@@ -301,6 +305,25 @@ class MainWindow(QMainWindow):
         self._register_app_user()
         # Apply correct visibility and placeholder for the initial page
         self._update_refresh_button_visibility()
+
+    def _load_app_version(self):
+        """Read {app_name, version} from config-record/version.json.
+
+        Single source of truth for the window title and the News page's
+        release heading, so they can't drift out of sync when the version
+        bumps. Falls back to a hardcoded default if the file is missing/corrupt.
+        """
+        default = {"app_name": "Dinosaur-List", "version": "V1.0.0.3"}
+        version_path = Path(__file__).parent.parent.parent / "config-record" / "version.json"
+        try:
+            with open(version_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return {
+                "app_name": data.get("app_name", default["app_name"]),
+                "version": data.get("version", default["version"]),
+            }
+        except Exception:
+            return default
 
     def _on_ai_assistant_clicked(self):
         """Open the AI Assistant dialog and wire it to the LLM worker."""
@@ -1176,6 +1199,11 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 combined_md += f"*(Error reading {md_file.name}: {e})*\n\n"
 
+        # Substitute the {{APP_VERSION}} placeholder with the version from
+        # config-record/version.json so news.md's heading can't drift out of
+        # sync with the window title when the version bumps.
+        combined_md = combined_md.replace("{{APP_VERSION}}", self.app_version_info["version"])
+
         # ── HTML template with full-width styling ─────────────────────────────
         CSS = """
             * { box-sizing: border-box; }
@@ -1771,24 +1799,28 @@ class MainWindow(QMainWindow):
             self._update_pagination_buttons()
 
     def _build_installed_tool_list(self):
-        """Scan Software_Downloaded and return {software_name: version} for every folder.
+        """Scan Software_Downloaded and return {software_name: version} for every folder,
+        plus this app's own name/version from config-record/version.json.
 
         Folder names follow Name-V-Version_A-Author (see folder_parser); the same
         parser the Dashboard cards use resolves name/version so this list matches
-        what's actually shown to the user.
+        what's actually shown to the user. DinosaurList itself is included here
+        (rather than only at launch) since UserToolsClient.create() fully replaces
+        the stored tool_list on every sync -- adding it just at launch would have
+        it dropped again by the very next close/delete sync.
         """
         from .folder_parser import parse_software_folder_name, format_software_name, get_version_raw
 
         tool_list = {}
-        if not self.software_path.exists():
-            return tool_list
+        if self.software_path.exists():
+            for folder in sorted(self.software_path.iterdir()):
+                if not folder.is_dir():
+                    continue
+                parsed = parse_software_folder_name(folder.name)
+                name = format_software_name(parsed)
+                tool_list[name] = get_version_raw(parsed)
 
-        for folder in sorted(self.software_path.iterdir()):
-            if not folder.is_dir():
-                continue
-            parsed = parse_software_folder_name(folder.name)
-            name = format_software_name(parsed)
-            tool_list[name] = get_version_raw(parsed)
+        tool_list[self.app_version_info["app_name"]] = self.app_version_info["version"]
 
         return tool_list
 
@@ -1866,9 +1898,9 @@ class MainWindow(QMainWindow):
             from info_details import report_tool_checkin
 
             ok, _ = report_tool_checkin(tool_name, version)
-            print(f"[INFO-DETAILS] tool={tool_name} version={version} POST ok={ok}")
+            print(f"[INFO-DETAILS] {'OK' if ok else 'FAILED'}")
         except Exception as exc:
-            print(f"[INFO-DETAILS] failed for tool={tool_name} version={version}: {exc}")
+            print(f"[INFO-DETAILS] FAILED: {exc}")
 
     def _update_tool_list_entry(self, tool_name, version):
         """PUT the just-downloaded tool/version into the user's tool_list right away,
@@ -1886,7 +1918,7 @@ class MainWindow(QMainWindow):
 
             username = LocalIdentity().get_current_username()
             ok, data = UserToolsClient().update(username, {tool_name: version})
-            print(f"[TOOL-SYNC:download] user={username} tool={tool_name} version={version} PUT ok={ok}")
+            print(f"[TOOL-SYNC:download] {'OK' if ok else 'FAILED'}")
 
             if ok and data:
                 api_json_path = self.config_path / "api.json"
@@ -1896,7 +1928,7 @@ class MainWindow(QMainWindow):
                         f, indent=2,
                     )
         except Exception as exc:
-            print(f"[TOOL-SYNC:download] failed for tool={tool_name} version={version}: {exc}")
+            print(f"[TOOL-SYNC:download] FAILED: {exc}")
 
     def _sync_installed_tools(self, event_label="launch"):
         """Write config-record/api.json and POST it via UserToolsClient.
@@ -1916,18 +1948,16 @@ class MainWindow(QMainWindow):
             from local_identity import LocalIdentity
             from user_tools_client import UserToolsClient
 
-            identity = LocalIdentity()
-            username = identity.get_current_username()
-            ip = identity.get_local_ip()
+            username = LocalIdentity().get_current_username()
 
             api_json_path = self.config_path / "api.json"
             with open(api_json_path, 'w', encoding='utf-8') as f:
                 json.dump({"user_name": username, "tool_list": tool_list}, f, indent=2)
 
             ok, _ = UserToolsClient().create(username, tool_list)
-            print(f"[TOOL-SYNC:{event_label}] user={username} ip={ip} tools={len(tool_list)} POST ok={ok}")
+            print(f"[TOOL-SYNC:{event_label}] {'OK' if ok else 'FAILED'}")
         except Exception as exc:
-            print(f"[TOOL-SYNC:{event_label}] failed: {exc}")
+            print(f"[TOOL-SYNC:{event_label}] FAILED: {exc}")
 
     def _resolve_app_store_icon(self, app_store_folder: Path):
         """Return the icon Path for an App_Store folder by reading Flow.txt [Icon].
