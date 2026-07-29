@@ -21,7 +21,6 @@ sdist/
 var/
 wheels/
 .version
-.exe
 .backup/
 App_Store/
 Software_Downloaded/
@@ -142,6 +141,7 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+runtime.exe
 .env
 .envrc
 .venv
