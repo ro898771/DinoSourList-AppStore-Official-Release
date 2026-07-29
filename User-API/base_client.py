@@ -4,12 +4,10 @@ Not meant to be used directly by application code -- subclass it (see
 info_details_client.py / info_feature_client.py) for a specific feature.
 """
 
-import os
-
 import requests
-from dotenv import load_dotenv
 
-load_dotenv()
+_TELEMETRY_API_BASE_URL = "http://WNPVDPE01:8000"
+_TELEMETRY_API_PASSWORD = "2pdbZxSX9T0DNxPoqtxMjjQDfSjz5mwdt1m95Yz9"
 
 
 class BaseApiClient:
@@ -17,8 +15,8 @@ class BaseApiClient:
     PATH = None  # set by subclasses
 
     def __init__(self, base_url=None, password=None, timeout=5):
-        self.base_url = (base_url or os.environ.get("TELEMETRY_API_BASE_URL", "http://WNPVDPE01:8000")).rstrip("/")
-        self.password = password or os.environ.get("TELEMETRY_API_PASSWORD")
+        self.base_url = (base_url or _TELEMETRY_API_BASE_URL).rstrip("/")
+        self.password = password or _TELEMETRY_API_PASSWORD
         self.timeout = timeout
 
     def _headers(self):

@@ -1,7 +1,8 @@
 ## 🎉 Official Released {{APP_VERSION}}
 
-We are excited to announce the release of the **1st Version** of the Centralized Application Dashboard after improve based on user feedback.
-Thank you to everyone who has been part of this journey!
+- BugFix on Delete Feature to prevent Inifite Loop
+- Modified Feature on download process
+- Smoothen then tab navigation process
 
 ## 💡 Proposed Solution: Centralized Application Dashboard
 

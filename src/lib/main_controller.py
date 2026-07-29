@@ -1895,13 +1895,22 @@ class MainWindow(QMainWindow):
         Only call this once a download has actually succeeded — this feeds the
         Telemetry API's tool check-in stats, so a failed/cancelled download must
         not be recorded. Never raises -- an unreachable API shouldn't disrupt
-        the already-completed install.
+        the already-completed install. Resolves user_name/ip_address via
+        LocalIdentity directly (matching _register_app_user/_sync_installed_tools/
+        _report_log) instead of going through the info_details.py wrapper.
         """
         self._ensure_user_api_on_path()
         try:
-            from info_details import report_tool_checkin
+            from local_identity import LocalIdentity
+            from info_details_client import InfoDetailsClient
 
-            ok, _ = report_tool_checkin(tool_name, version)
+            identity = LocalIdentity()
+            ok, _ = InfoDetailsClient().create(
+                tool_name=tool_name,
+                version=version,
+                user_name=identity.get_current_username(),
+                ip_address=identity.get_local_ip(),
+            )
             print(f"[INFO-DETAILS] {'OK' if ok else 'FAILED'}")
         except Exception as exc:
             print(f"[INFO-DETAILS] FAILED: {exc}")
@@ -2708,8 +2717,14 @@ class MainWindow(QMainWindow):
         print(f"[DELETE] Folder exists  : {folder.exists()}")
 
         if not folder.exists():
-            QMessageBox.warning(self, "Delete Failed",
-                                f"Folder not found:\n{folder}")
+            # Folder is already gone -- most likely deleted manually outside the
+            # app (e.g. via Explorer). The stale card would otherwise sit on the
+            # Dashboard forever (a warning dialog alone doesn't remove it), and
+            # every future click on it would just repeat this same warning with
+            # nothing visibly changing. Clean it up immediately instead.
+            print(f"[DELETE] Folder already missing on disk — removing stale card: {folder}")
+            self._remove_dashboard_card(str(folder))
+            self._sync_installed_tools("delete")
             return
 
         msg_box = QMessageBox(self)

@@ -376,12 +376,12 @@ class SoftwareCard(QFrame):
             for file_item in store_data.get('files', []):
                 match = version_pattern.match(file_item.get('name', ''))
                 if match and file_item.get('id'):
-                    version = f"v{match.group(1)}"
+                    version = match.group(1)
                     file_id = file_item['id']
                     self.versions_data.append((version, file_id))
 
             self.versions_data.sort(
-                key=lambda x: [int(n) for n in x[0].replace('v', '').split('.')],
+                key=lambda x: [int(n) for n in x[0].split('.')],
                 reverse=True
             )
 
@@ -555,10 +555,10 @@ class SoftwareCard(QFrame):
             for file_item in store_data.get('files', []):
                 match = version_pattern.match(file_item.get('name', ''))
                 if match and file_item.get('id'):
-                    new_versions.append((f"v{match.group(1)}", file_item['id']))
+                    new_versions.append((match.group(1), file_item['id']))
 
             new_versions.sort(
-                key=lambda x: [int(n) for n in x[0].replace('v', '').split('.')],
+                key=lambda x: [int(n) for n in x[0].split('.')],
                 reverse=True
             )
 
