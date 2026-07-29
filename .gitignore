@@ -21,6 +21,7 @@ sdist/
 var/
 wheels/
 .version
+.exe
 .backup/
 App_Store/
 Software_Downloaded/
