@@ -3,6 +3,9 @@
 - BugFix on Delete Feature to prevent Inifite Loop
 - Modified Feature on download process
 - Smoothen then tab navigation process
+- Resolved Warning for Path Directory
+- Log API Fixing
+- Filter added OR operation for Developer Name / Tool Name
 
 ## 💡 Proposed Solution: Centralized Application Dashboard
 

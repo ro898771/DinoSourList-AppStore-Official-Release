@@ -6,7 +6,7 @@ info_details_client.py / info_feature_client.py) for a specific feature.
 
 import requests
 
-_TELEMETRY_API_BASE_URL = "http://WNPVDPE01:8000"
+_TELEMETRY_API_BASE_URL = "http://wnpvdpe01.sgn.broadcom.net:8000"
 _TELEMETRY_API_PASSWORD = "2pdbZxSX9T0DNxPoqtxMjjQDfSjz5mwdt1m95Yz9"
 
 

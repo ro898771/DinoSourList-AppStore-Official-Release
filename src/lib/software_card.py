@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QIcon
 
 from .clickable_label import ClickableLabel
-from .folder_parser import parse_software_folder_name, format_software_name, format_version, format_author
+from .folder_parser import parse_software_folder_name, format_software_name, format_version, format_author, get_author_raw
 from .styles import (
     CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE,
     CARD_INFO_STYLE, VERSION_LATEST_CONFIG, VERSION_OUTDATED_CONFIG,
@@ -39,9 +39,10 @@ class SoftwareCard(QFrame):
         self.folder_id = folder_id or ""
         self.versions_data = []  # List of (version, file_id) tuples
 
-        # Human-readable name used by the filter box
+        # Human-readable name/author used by the filter box
         _parsed = parse_software_folder_name(folder_path.name)
         self.display_name = format_software_name(_parsed)
+        self.author_name = get_author_raw(_parsed)
 
         # Check if update is available by comparing versions
         self.is_latest = self._check_version_status()

@@ -1084,7 +1084,7 @@ class MainWindow(QMainWindow):
         row = col = 0
         matched = 0
         for folder_path_str, card in self.card_references.items():
-            if self._matches_filter(card.display_name, text):
+            if self._matches_filter(card.display_name, text, card.author_name):
                 self.cards_layout.addWidget(card, row, col)
                 card.show()
                 matched += 1
@@ -1106,21 +1106,26 @@ class MainWindow(QMainWindow):
             )
 
     @staticmethod
-    def _matches_filter(name: str, text: str) -> bool:
-        """Return True if *name* matches the filter *text*.
+    def _matches_filter(name: str, text: str, author: str = "") -> bool:
+        """Return True if *name* OR *author* matches the filter *text*.
 
-        Matching rules (case-insensitive):
+        Matching rules (case-insensitive), applied independently to name and
+        author -- either one matching is enough:
           1. Empty search  → always match
-          2. Substring     → search text appears anywhere in name
-          3. Word match    → every space-separated word appears in name
+          2. Substring     → search text appears anywhere in the value
+          3. Word match    → every space-separated word appears in the value
         """
         if not text.strip():
             return True
-        name_lower  = name.lower()
         search_lower = text.lower().strip()
-        if search_lower in name_lower:
-            return True
-        return all(word in name_lower for word in search_lower.split())
+
+        def _matches_value(value: str) -> bool:
+            value_lower = value.lower()
+            if search_lower in value_lower:
+                return True
+            return all(word in value_lower for word in search_lower.split())
+
+        return _matches_value(name) or (bool(author) and _matches_value(author))
 
     def _filter_store_cards(self, text: str):
         """Show only Store cards whose name matches *text*, re-packing the grid."""
@@ -1135,7 +1140,7 @@ class MainWindow(QMainWindow):
         row = col = 0
         matched = 0
         for folder_name, card in self.store_card_references.items():
-            if self._matches_filter(card.software_name, text):
+            if self._matches_filter(card.software_name, text, card.author_name):
                 self.cards_layout.addWidget(card, row, col)
                 card.show()
                 matched += 1
@@ -2878,7 +2883,7 @@ class MainWindow(QMainWindow):
         row = col = 0
         matched = 0
         for remaining_card in self.card_references.values():
-            if self._matches_filter(remaining_card.display_name, filter_text):
+            if self._matches_filter(remaining_card.display_name, filter_text, remaining_card.author_name):
                 self.cards_layout.addWidget(remaining_card, row, col)
                 remaining_card.show()
                 matched += 1

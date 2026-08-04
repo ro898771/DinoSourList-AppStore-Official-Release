@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def _lp(path):
-    """Return a Windows long-path-safe string (\\?\ prefix) to bypass MAX_PATH (260 chars)."""
+    r"""Return a Windows long-path-safe string (\\?\ prefix) to bypass MAX_PATH (260 chars)."""
     if sys.platform != 'win32':
         return str(path)
     abs_path = os.path.abspath(str(path))
