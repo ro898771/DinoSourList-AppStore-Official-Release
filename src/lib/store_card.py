@@ -8,7 +8,10 @@ from pathlib import Path
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QIcon
-from .styles import CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE, CARD_INFO_STYLE, COMBOBOX_STYLE, get_version_label_style
+from .styles import (
+    CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE, CARD_INFO_STYLE, COMBOBOX_STYLE,
+    get_version_label_style, DISABLED_ACTION_LABEL_STYLE,
+)
 from .clickable_label import ClickableLabel
 
 
@@ -20,7 +23,7 @@ class StoreCard(QFrame):
     card_refresh_clicked = Signal(str, str)   # Emits (folder_name, folder_id)
 
     def __init__(self, software_name, author_name, icon_path=None, json_path=None,
-                 folder_name=None, folder_id=None):
+                 folder_name=None, folder_id=None, guide_available=True, readme_available=True):
         super().__init__()
         self.software_name = software_name
         self.author_name = author_name
@@ -49,30 +52,38 @@ class StoreCard(QFrame):
 
         self.guide_label = ClickableLabel("Details")
         self.guide_label.setAlignment(Qt.AlignCenter)
-        self.guide_label.setCursor(Qt.PointingHandCursor)
         self.guide_label.setFixedHeight(28)
         self.guide_label.setFixedWidth(70)
-        self.guide_label.setStyleSheet(get_version_label_style(
-            "#6f42c1",      # Purple text
-            "#e2d9f3",      # Light warm purple background
-            "#d3c5e8",      # Darker purple on hover
-            "#5a32a3"       # Darker purple text on hover
-        ))
-        self.guide_label.clicked.connect(self._on_guide_clicked)
+        if guide_available:
+            self.guide_label.setCursor(Qt.PointingHandCursor)
+            self.guide_label.setStyleSheet(get_version_label_style(
+                "#6f42c1",      # Purple text
+                "#e2d9f3",      # Light warm purple background
+                "#d3c5e8",      # Darker purple on hover
+                "#5a32a3"       # Darker purple text on hover
+            ))
+            self.guide_label.clicked.connect(self._on_guide_clicked)
+        else:
+            self.guide_label.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
+            self.guide_label.setEnabled(False)
         left_col.addWidget(self.guide_label)
 
         self.readme_label = ClickableLabel("ReadMe")
         self.readme_label.setAlignment(Qt.AlignCenter)
-        self.readme_label.setCursor(Qt.PointingHandCursor)
         self.readme_label.setFixedHeight(28)
         self.readme_label.setFixedWidth(70)
-        self.readme_label.setStyleSheet(get_version_label_style(
-            "#007bff",      # Blue text
-            "#cfe2ff",      # Light blue background
-            "#b6d4fe",      # Darker blue on hover
-            "#0056b3"       # Darker blue text on hover
-        ))
-        self.readme_label.clicked.connect(self._on_readme_clicked)
+        if readme_available:
+            self.readme_label.setCursor(Qt.PointingHandCursor)
+            self.readme_label.setStyleSheet(get_version_label_style(
+                "#007bff",      # Blue text
+                "#cfe2ff",      # Light blue background
+                "#b6d4fe",      # Darker blue on hover
+                "#0056b3"       # Darker blue text on hover
+            ))
+            self.readme_label.clicked.connect(self._on_readme_clicked)
+        else:
+            self.readme_label.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
+            self.readme_label.setEnabled(False)
         left_col.addWidget(self.readme_label)
 
         top_row.addLayout(left_col)

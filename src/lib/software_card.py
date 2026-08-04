@@ -14,7 +14,7 @@ from .folder_parser import parse_software_folder_name, format_software_name, for
 from .styles import (
     CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE,
     CARD_INFO_STYLE, VERSION_LATEST_CONFIG, VERSION_OUTDATED_CONFIG,
-    get_version_label_style, COMBOBOX_STYLE
+    get_version_label_style, COMBOBOX_STYLE, DISABLED_ACTION_LABEL_STYLE
 )
 
 
@@ -29,7 +29,7 @@ class SoftwareCard(QFrame):
     card_refresh_clicked = Signal(str, str)  # Emits (folder_name, folder_id)
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
-                 icon_path=None, folder_name=None, folder_id=None):
+                 icon_path=None, folder_name=None, folder_id=None, readme_available=True):
         super().__init__()
         self.folder_path = folder_path
         self.lnk_path = lnk_path
@@ -66,16 +66,20 @@ class SoftwareCard(QFrame):
 
         readme_button = ClickableLabel("ReadMe")
         readme_button.setAlignment(Qt.AlignCenter)
-        readme_button.setCursor(Qt.PointingHandCursor)
         readme_button.setFixedHeight(28)
         readme_button.setFixedWidth(70)
-        readme_button.setStyleSheet(get_version_label_style(
-            "#007bff",      # Blue text
-            "#cfe2ff",      # Light blue background
-            "#b6d4fe",      # Darker blue on hover
-            "#0056b3"       # Darker blue text on hover
-        ))
-        readme_button.clicked.connect(lambda: self.readme_clicked.emit(str(self.folder_path)))
+        if readme_available:
+            readme_button.setCursor(Qt.PointingHandCursor)
+            readme_button.setStyleSheet(get_version_label_style(
+                "#007bff",      # Blue text
+                "#cfe2ff",      # Light blue background
+                "#b6d4fe",      # Darker blue on hover
+                "#0056b3"       # Darker blue text on hover
+            ))
+            readme_button.clicked.connect(lambda: self.readme_clicked.emit(str(self.folder_path)))
+        else:
+            readme_button.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
+            readme_button.setEnabled(False)
         left_col.addWidget(readme_button)
 
         delete_button = ClickableLabel("Delete")

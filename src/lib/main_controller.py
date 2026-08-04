@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                 QLabel, QPushButton, QScrollArea, QGridLayout,
                                 QMessageBox, QTextBrowser, QDialog, QApplication,
                                 QLineEdit, QComboBox, QFrame, QTextEdit,
-                                QSpacerItem, QSizePolicy)
+                                QSpacerItem, QSizePolicy, QCheckBox)
 from PySide6.QtCore import (Qt, QUrl, Signal, QObject, QTimer, QSize, QPointF,
                              QVariantAnimation, QEasingCurve)
 from PySide6.QtGui import QFont, QMovie, QTextCursor, QPixmap, QPainter, QPen, QColor, QIcon
@@ -33,6 +33,7 @@ except ImportError:
 
 from .software_card import SoftwareCard
 from .store_card import StoreCard
+from .list_row import SoftwareListRow, StoreListRow, LIST_ROW_WIDTH
 from .boxlink_api import BoxLinkAPI, is_dotnet_missing_error, DOTNET_DOWNLOAD_URL
 from .app_controller import AppStoreDownloadWorker, SingleCardDownloadWorker
 from .workers import WorkerSignals, RefreshWorker, SingleCardRefreshWorker, CheckWorker, DownloadInstallWorker, DeleteWorker
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow):
         self._busy_count = 0                # >0 while a refresh/download/install is in flight
         self._status_owner_token = 0        # bumped by any user action that should pre-empt an in-flight async op's status text
         self._ai_dialog = None              # AI Assistant dialog instance (kept non-modal)
+        self._list_view_enabled = False     # Dashboard/Store card grid: False = icon grid, True = single-column list
 
         # Page names
         self.page_names = [
@@ -243,6 +245,28 @@ class MainWindow(QMainWindow):
         # Y-axis with the filter box instead of sitting up in the header.
         controls_row.addStretch()
 
+        # List View checkbox -- checked stacks Dashboard/Store cards into a
+        # single column (see _current_card_columns); unchecked returns to the
+        # multi-column icon grid. Visible on Page 1/2 only (same pages as
+        # Refresh/filter -- see _update_refresh_button_visibility).
+        self.list_view_checkbox = QCheckBox("☰  List View")
+        self.list_view_checkbox.setCursor(Qt.PointingHandCursor)
+        self.list_view_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 13px;
+                font-weight: 600;
+                color: #495057;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+        """)
+        self.list_view_checkbox.toggled.connect(self._on_list_view_toggled)
+        controls_row.addWidget(self.list_view_checkbox)
+        controls_row.addSpacing(12)
+
         # Refresh button -- aligned above the last (4th) card of the grid below,
         # not just floated to the window's edge.
         self.refresh_btn = QPushButton("⟳  Refresh")
@@ -267,6 +291,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(SCROLL_BAR_STYLE)
+        self.cards_scroll_area = scroll
         self.cards_container = QWidget()
         self.cards_layout = QGridLayout(self.cards_container)
         self.cards_layout.setSpacing(25)
@@ -277,7 +302,58 @@ class MainWindow(QMainWindow):
         # breathing room below the filter box without reintroducing a big gap.
         self.cards_layout.setContentsMargins(0, 8, 0, 20)
         scroll.setWidget(self.cards_container)
-        layout.addWidget(scroll)
+
+        # A-Z jump bar -- List View only. Each letter scrolls the list to the
+        # first row at/after that letter (see _jump_to_letter); items are
+        # sorted alphabetically in List View so this doubles as the numbering
+        # order for each row's sequence number.
+        scroll_row = QHBoxLayout()
+        scroll_row.setSpacing(4)
+        scroll_row.addWidget(scroll, 1)
+
+        self.az_bar_widget = QWidget()
+        az_bar_layout = QVBoxLayout(self.az_bar_widget)
+        az_bar_layout.setContentsMargins(2, 4, 2, 4)
+        az_bar_layout.setSpacing(0)
+        az_bar_layout.setAlignment(Qt.AlignTop)
+        self._az_default_style = """
+            QLabel {
+                font-size: 10px;
+                font-weight: 700;
+                color: #868e96;
+                background-color: transparent;
+                border: none;
+            }
+            QLabel:hover {
+                color: #0d6efd;
+            }
+        """
+        self._az_active_style = """
+            QLabel {
+                font-size: 11px;
+                font-weight: 800;
+                color: #0d6efd;
+                background-color: #eef0ff;
+                border-radius: 4px;
+                border: none;
+            }
+        """
+        self._az_letter_labels = {}
+        import string
+        for letter in string.ascii_uppercase:
+            letter_label = ClickableLabel(letter)
+            letter_label.setAlignment(Qt.AlignCenter)
+            letter_label.setFixedSize(20, 14)
+            letter_label.setCursor(Qt.PointingHandCursor)
+            letter_label.setStyleSheet(self._az_default_style)
+            letter_label.clicked.connect(lambda checked=False, ltr=letter: self._jump_to_letter(ltr))
+            az_bar_layout.addWidget(letter_label)
+            self._az_letter_labels[letter] = letter_label
+        self.az_bar_widget.setVisible(False)
+        scroll_row.addWidget(self.az_bar_widget)
+
+        layout.addLayout(scroll_row)
+        scroll.verticalScrollBar().valueChanged.connect(self._on_list_scrolled)
 
         # Status - Black text
         self.status_label = QLabel("")
@@ -315,8 +391,13 @@ class MainWindow(QMainWindow):
 
         Fewer columns (3) while the sidebar is expanded, so the grid fits
         comfortably on smaller laptop screens; collapsing the sidebar to an
-        icon-only rail frees enough width for a 4th column.
+        icon-only rail frees enough width for a 4th column. Forced to 1 when
+        List View is checked, which stacks every card into a single column --
+        every grid-packing loop reads this, so flipping it here is all that's
+        needed to switch views.
         """
+        if getattr(self, "_list_view_enabled", False):
+            return 1
         return 4 if getattr(self, "_sidebar_collapsed", False) else 3
 
     def _ideal_window_width(self, num_cols, sidebar_width):
@@ -346,10 +427,13 @@ class MainWindow(QMainWindow):
             return  # called once before the sidebar/spacer exist yet -- skip
 
         # Constant for a given column count regardless of window size:
-        # content margin (20) + N cards (320 each) + (N-1) gaps (25 each) --
-        # see cards_layout's margins above for why this starts at 20px.
+        # content margin (20) + N cards (each card_w wide) + (N-1) gaps (25
+        # each) -- see cards_layout's margins above for why this starts at
+        # 20px. List View swaps in the wider LIST_ROW_WIDTH single column
+        # instead of the icon grid's 320px cards.
         num_cols = self._current_card_columns()
-        grid_right_edge = 20 + num_cols * 320 + (num_cols - 1) * 25
+        card_w = LIST_ROW_WIDTH if self._list_view_enabled else 320
+        grid_right_edge = 20 + num_cols * card_w + (num_cols - 1) * 25
 
         content_width = self.width() - self.sidebar_widget.width()
         row_right_bound = content_width - 20  # content_widget's own right margin
@@ -1125,6 +1209,7 @@ class MainWindow(QMainWindow):
             self._update_refresh_button_visibility()
             self._display_current_page()
             self._update_sidebar_buttons()
+            self._update_az_highlight()
 
     def _update_page_title(self):
         """Update the page title based on current page"""
@@ -1136,6 +1221,73 @@ class MainWindow(QMainWindow):
         }
         self.title_label.setText(titles.get(self.current_page, "🚀 Software Dashboard"))
     
+    def _on_list_view_toggled(self, checked):
+        """Switch the Dashboard/Store card grid between the multi-column icon
+        view and a single-column list view (see _current_card_columns)."""
+        self._list_view_enabled = checked
+        self.az_bar_widget.setVisible(checked and self.current_page in [0, 1])
+        self._display_current_page()
+        self._sync_refresh_button_alignment()
+        self._update_az_highlight()
+
+    def _current_list_refs(self):
+        """(refs dict, name attribute) for whichever page's List View is active, or None."""
+        if self.current_page == 0:
+            return self.card_references, 'display_name'
+        if self.current_page == 1:
+            return self.store_card_references, 'software_name'
+        return None, None
+
+    def _jump_to_letter(self, letter):
+        """A-Z jump bar: scroll the current List View to the first row at or
+        after *letter* (falls through to the next available letter if none
+        start exactly with it -- rows are sorted alphabetically in List View,
+        so this is a simple linear scan)."""
+        if not self._list_view_enabled:
+            return
+
+        refs, name_attr = self._current_list_refs()
+        if refs is None:
+            return
+
+        target = letter.lower()
+        for widget in refs.values():
+            if not widget.isVisible():
+                continue
+            name = getattr(widget, name_attr, "") or ""
+            if name[:1].lower() >= target:
+                self.cards_scroll_area.ensureWidgetVisible(widget)
+                self._update_az_highlight()
+                return
+
+    def _on_list_scrolled(self, value):
+        """Keep the A-Z bar's highlighted letter in sync while the list scrolls."""
+        self._update_az_highlight()
+
+    def _update_az_highlight(self):
+        """Highlight the A-Z bar letter matching the topmost visible row."""
+        if not self._list_view_enabled or not self.az_bar_widget.isVisible():
+            return
+
+        refs, name_attr = self._current_list_refs()
+        if refs is None:
+            return
+
+        scroll_y = self.cards_scroll_area.verticalScrollBar().value()
+        current_letter = None
+        best_y = -1
+        for widget in refs.values():
+            if not widget.isVisible():
+                continue
+            y = widget.y()
+            if y <= scroll_y + 4 and y > best_y:
+                best_y = y
+                name = getattr(widget, name_attr, "") or ""
+                current_letter = name[:1].upper() if name else None
+
+        for letter, label in self._az_letter_labels.items():
+            label.setStyleSheet(self._az_active_style if letter == current_letter else self._az_default_style)
+
     def _update_refresh_button_visibility(self):
         """Show/hide refresh button, filter box, and header badges based on current page."""
         self.refresh_btn.setVisible(self.current_page in [0, 1])
@@ -1143,6 +1295,12 @@ class MainWindow(QMainWindow):
         # Filter box: visible on Page 1 (Dashboard) and Page 2 (Store)
         on_filtered_page = self.current_page in [0, 1]
         self.filter_edit.setVisible(on_filtered_page)
+
+        # List View checkbox: same pages as the filter box/Refresh button
+        self.list_view_checkbox.setVisible(on_filtered_page)
+
+        # A-Z jump bar: List View only, and only on the pages that have a list view
+        self.az_bar_widget.setVisible(self._list_view_enabled and on_filtered_page)
 
         # Clear filter silently on every page switch so each page starts fresh
         self.filter_edit.blockSignals(True)
@@ -1219,7 +1377,9 @@ class MainWindow(QMainWindow):
             self.cards_layout.setAlignment(Qt.AlignTop)
             self.cards_layout.setColumnStretch(0, 1)
             self._display_news_page()
-    
+
+        self._update_az_highlight()
+
     def _display_dashboard_page(self):
         """Display Software Dashboard page (Page 1) - Scrollable for all cards"""
         from .folder_parser import parse_software_folder_name, format_software_name, get_author_raw
@@ -1228,9 +1388,19 @@ class MainWindow(QMainWindow):
         self.card_references.clear()
         self.dashboard_folder_name_map = {}  # folder_name (App_Store) → folder_path str
 
+        # List View sorts alphabetically by name so the sequence number and
+        # the A-Z jump bar (see _jump_to_letter) both line up with what's on
+        # screen; the icon grid keeps its normal (install/scan) order.
+        software_list = self.all_software_data
+        if self._list_view_enabled:
+            software_list = sorted(
+                software_list,
+                key=lambda sw: format_software_name(parse_software_folder_name(sw['folder'].name)).lower()
+            )
+
         # Display ALL software cards (no limit, scrollable)
         row = col = 0
-        for i, software_data in enumerate(self.all_software_data):
+        for i, software_data in enumerate(software_list):
             folder = software_data['folder']
 
             # Derive the App_Store folder name and folder_id for this installed software
@@ -1251,7 +1421,9 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
-            card = SoftwareCard(
+            row_class = SoftwareListRow if self._list_view_enabled else SoftwareCard
+            extra_kwargs = {'sequence_number': i + 1} if self._list_view_enabled else {}
+            card = row_class(
                 software_data['name'],
                 None,
                 folder,
@@ -1259,6 +1431,8 @@ class MainWindow(QMainWindow):
                 icon_path=software_data.get('icon_path'),
                 folder_name=app_store_folder_name,
                 folder_id=dash_folder_id,
+                readme_available=self._dashboard_readme_exists(folder),
+                **extra_kwargs,
             )
             card.clicked.connect(self.launch_software)
             card.version_clicked.connect(self.show_version_info)
@@ -1330,20 +1504,31 @@ class MainWindow(QMainWindow):
             self.sidebar_store_count_label.setText("🏪  Software Store: 0")
             return
         
+        # List View sorts alphabetically by name so the sequence number and
+        # the A-Z jump bar (see _jump_to_letter) line up with what's on
+        # screen; sort a copy -- store_data is the cached list, don't mutate it.
+        if self._list_view_enabled:
+            store_data = sorted(store_data, key=lambda sw: sw['name'].lower())
+
         # Display ALL cards in grid (4 columns, scrollable rows)
         row = 0
         col = 0
         self.store_card_references = {}  # folder_name → StoreCard
 
-        for software in store_data:
-            # Create store card
-            card = StoreCard(
+        for i, software in enumerate(store_data):
+            # Create store card (or list row, if List View is checked)
+            row_class = StoreListRow if self._list_view_enabled else StoreCard
+            extra_kwargs = {'sequence_number': i + 1} if self._list_view_enabled else {}
+            card = row_class(
                 software_name=software['name'],
                 author_name=software['author'],
                 icon_path=software.get('icon_path'),
                 json_path=software.get('json_path'),
                 folder_name=software.get('folder_name'),
                 folder_id=software.get('folder_id', ''),
+                guide_available=software.get('guide_available', True),
+                readme_available=software.get('readme_available', True),
+                **extra_kwargs,
             )
 
             # Connect signals
@@ -1409,6 +1594,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 f"✓ Showing {total} software application(s) | {self.page_names[0]}"
             )
+        self._update_az_highlight()
 
     @staticmethod
     def _matches_filter(name: str, text: str, author: str = "") -> bool:
@@ -1466,6 +1652,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 f"🏪 {self.page_names[1]} — {total} software available"
             )
+        self._update_az_highlight()
 
     def _build_doc_page_html(self, html_body, accent, tint):
         """Wrap rendered markdown HTML in a clean, modern web-page shell.
@@ -2369,6 +2556,8 @@ class MainWindow(QMainWindow):
             'folder': folder,
             'folder_name': folder_name,
             'folder_id': folder_id,
+            'guide_available': self._find_store_guide_path(folder) is not None,
+            'readme_available': self._find_store_readme_path(folder) is not None,
         }
 
     def _load_store_software(self):
@@ -2447,6 +2636,80 @@ class MainWindow(QMainWindow):
         # Call the common download logic (from Page 2, always a new install/update)
         self._start_download(software_name, author_name, version, file_id, from_page1=False, is_update=False)
     
+    def _find_store_guide_path(self, folder: Path):
+        """Resolve the Store 'Details' guide file for *folder*, from Flow.txt
+        [Guide] file=. Returns the Path if declared and present, else None.
+        """
+        flow_txt = folder / "Flow.txt"
+        if not flow_txt.exists():
+            return None
+
+        guide_filename = None
+        current_section = None
+        try:
+            with open(flow_txt, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('[') and line.endswith(']'):
+                        current_section = line[1:-1].lower()
+                        continue
+                    if current_section == 'guide' and '=' in line:
+                        key, _, value = line.partition('=')
+                        if key.strip().lower() == 'file':
+                            v = value.strip()
+                            if v and v.lower() not in ('none', 'false', ''):
+                                guide_filename = v
+                            break
+        except Exception as e:
+            print(f"[GUIDE] Error reading Flow.txt for {folder.name}: {e}")
+
+        if not guide_filename:
+            return None
+
+        candidate = folder / guide_filename
+        return candidate if candidate.exists() else None
+
+    def _find_store_readme_path(self, folder: Path):
+        """Resolve the Store 'ReadMe' file for *folder* (Flow.txt [ReadMe]
+        Flag=/file=, falling back to a bare README.md). Returns the Path if
+        present, else None.
+        """
+        flow_txt = folder / "Flow.txt"
+        readme_flag = False
+        readme_filename = None
+
+        if flow_txt.exists():
+            current_section = None
+            try:
+                with open(flow_txt, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith('[') and line.endswith(']'):
+                            current_section = line[1:-1].lower()
+                            continue
+                        if current_section == 'readme' and '=' in line:
+                            key, _, value = line.partition('=')
+                            key = key.strip().lower()
+                            value = value.strip()
+                            if key == 'flag':
+                                readme_flag = value.lower() == 'true'
+                            elif key == 'file':
+                                readme_filename = value
+            except Exception as e:
+                print(f"[README] Error reading Flow.txt for {folder.name}: {e}")
+
+        if readme_flag and readme_filename:
+            candidate = folder / readme_filename
+            if candidate.exists():
+                return candidate
+
+        fallback = folder / "README.md"
+        return fallback if fallback.exists() else None
+
     def _on_store_guide_clicked(self, software_name):
         """Handle Details button click from store card.
         Opens the guide file whose name is read from Flow.txt [Guide] file=."""
@@ -2455,43 +2718,13 @@ class MainWindow(QMainWindow):
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
         guide_path = None
 
-        # Find the matching App_Store folder and read guide filename from Flow.txt
+        # Find the matching App_Store folder and resolve its guide file
         for folder in app_store_path.iterdir():
             if not folder.is_dir() or not folder.name.startswith(software_name):
                 continue
-
-            flow_txt = folder / "Flow.txt"
-            guide_filename = None
-
-            if flow_txt.exists():
-                current_section = None
-                try:
-                    with open(flow_txt, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith('[') and line.endswith(']'):
-                                current_section = line[1:-1].lower()
-                                continue
-                            if current_section == 'guide' and '=' in line:
-                                key, _, value = line.partition('=')
-                                if key.strip().lower() == 'file':
-                                    v = value.strip()
-                                    if v and v.lower() not in ('none', 'false', ''):
-                                        guide_filename = v
-                                    break
-                except Exception as e:
-                    print(f"[GUIDE] Error reading Flow.txt for {folder.name}: {e}")
-
-            if guide_filename:
-                candidate = folder / guide_filename
-                print(f"[GUIDE] [{folder.name}] Flow.txt guide={guide_filename}  exists={candidate.exists()}")
-                if candidate.exists():
-                    guide_path = candidate
-                    break
-            else:
-                print(f"[GUIDE] [{folder.name}] No [Guide] file= in Flow.txt — skipping")
+            guide_path = self._find_store_guide_path(folder)
+            if guide_path:
+                break
 
         if guide_path:
             try:
@@ -2532,47 +2765,11 @@ class MainWindow(QMainWindow):
         for folder in app_store_path.iterdir():
             if not folder.is_dir() or not folder.name.startswith(software_name):
                 continue
-
-            flow_txt = folder / "Flow.txt"
-            readme_flag = False
-            readme_filename = None
-            current_section = None
-
-            if flow_txt.exists():
-                try:
-                    with open(flow_txt, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith('[') and line.endswith(']'):
-                                current_section = line[1:-1].lower()
-                                continue
-                            if current_section == 'readme' and '=' in line:
-                                key, _, value = line.partition('=')
-                                key = key.strip().lower()
-                                value = value.strip()
-                                if key == 'flag':
-                                    readme_flag = value.lower() == 'true'
-                                elif key == 'file':
-                                    readme_filename = value
-                except Exception as e:
-                    print(f"[README] Error reading Flow.txt for {folder.name}: {e}")
-
-            if readme_flag and readme_filename:
-                candidate = folder / readme_filename
-                print(f"[README] [{folder.name}] Flow.txt readme={readme_filename}  exists={candidate.exists()}")
-                if candidate.exists():
-                    readme_path = candidate
-                    base_folder = folder
-                    break
-            else:
-                # Fallback: bare README.md directly in the App_Store folder, if present
-                fallback = folder / "README.md"
-                if fallback.exists():
-                    readme_path = fallback
-                    base_folder = folder
-                    break
+            found = self._find_store_readme_path(folder)
+            if found:
+                readme_path = found
+                base_folder = folder
+                break
 
         if readme_path and readme_path.exists():
             try:
@@ -3343,6 +3540,16 @@ class MainWindow(QMainWindow):
                 return candidate, app_store_dir
 
         return None, None
+
+    def _dashboard_readme_exists(self, folder: Path) -> bool:
+        """True if show_readme() would find a README for *folder* -- used to
+        grey out the Dashboard ReadMe button upfront instead of only failing
+        after the click.
+        """
+        readme_path, _ = self._find_app_store_readme(folder)
+        if readme_path is None:
+            readme_path = folder / "README.md"
+        return readme_path.exists()
 
     def show_readme(self, folder_path):
         """Show README content in GitHub-style viewer (triggered by ReadMe button).

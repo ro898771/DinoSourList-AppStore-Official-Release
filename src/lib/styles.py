@@ -99,6 +99,22 @@ def get_version_label_style(color, bg_color, hover_bg, hover_color):
         }}
     """
 
+# Greyed-out variant of get_version_label_style, for action labels (Details,
+# ReadMe) whose target file isn't available -- signals "nothing to open"
+# instead of the purple/blue "this works" colors.
+DISABLED_ACTION_LABEL_STYLE = """
+    QLabel, QPushButton {
+        font-size: 10px;
+        font-weight: 600;
+        color: #9ca3af;
+        background-color: #f1f3f5;
+        border: 2px solid #e2e6ea;
+        border-radius: 4px;
+        padding: 0px 8px;
+        margin: 0px;
+    }
+"""
+
 # Title Styles
 TITLE_STYLE = """
     font-size: 28px;
