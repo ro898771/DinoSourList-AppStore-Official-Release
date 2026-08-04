@@ -1,6 +1,6 @@
 {
   "folder_id": "368728134757",
-  "item_count": 20,
+  "item_count": 19,
   "items": [
     {
       "name": "#Python@Deployment-RoeyYee",
@@ -68,11 +68,16 @@
       "modified_by": null,
       "contents": {
         "folder_id": "368894919788",
-        "total_items": 6,
+        "total_items": 8,
         "items": [
           {
             "type": "file",
-            "id": "2305101393571",
+            "id": "2375313659067",
+            "name": "BandMaster.ico"
+          },
+          {
+            "type": "file",
+            "id": "2387123325049",
             "name": "BandMasterUserGuide.pptx"
           },
           {
@@ -83,7 +88,7 @@
           {
             "type": "file",
             "id": "2155059458308",
-            "name": "icon.ico"
+            "name": "OIG2.ico"
           },
           {
             "type": "file",
@@ -99,10 +104,15 @@
             "type": "file",
             "id": "2228356244631",
             "name": "v1.0.0.4.zip"
+          },
+          {
+            "type": "file",
+            "id": "2377265891702",
+            "name": "v2.0.0.0.zip"
           }
         ],
         "summary": {
-          "files": 6,
+          "files": 8,
           "folders": 0
         },
         "status": "SUCCESS"
@@ -339,54 +349,6 @@
       }
     },
     {
-      "name": "GU Validation-TzerMing",
-      "type": "folder",
-      "id": "369385710780",
-      "size": null,
-      "etag": "2",
-      "sequence_id": "2",
-      "created_at": null,
-      "modified_at": null,
-      "created_by": null,
-      "modified_by": null,
-      "contents": {
-        "folder_id": "369385710780",
-        "total_items": 5,
-        "items": [
-          {
-            "type": "file",
-            "id": "2228472851973",
-            "name": "Flow.txt"
-          },
-          {
-            "type": "file",
-            "id": "2155538600773",
-            "name": "Guide.pptx"
-          },
-          {
-            "type": "file",
-            "id": "2228485076973",
-            "name": "icon.ico"
-          },
-          {
-            "type": "file",
-            "id": "2234063541234",
-            "name": "README.md"
-          },
-          {
-            "type": "file",
-            "id": "2228466037909",
-            "name": "v1.0.0.0.zip"
-          }
-        ],
-        "summary": {
-          "files": 5,
-          "folders": 0
-        },
-        "status": "SUCCESS"
-      }
-    },
-    {
       "name": "GUQC-RoeyYee",
       "type": "folder",
       "id": "386674784485",
@@ -505,7 +467,7 @@
       "modified_by": null,
       "contents": {
         "folder_id": "380219190867",
-        "total_items": 10,
+        "total_items": 11,
         "items": [
           {
             "type": "folder",
@@ -656,22 +618,27 @@
           },
           {
             "type": "file",
-            "id": "2343359639490",
-            "name": "V1.1.0.0.zip"
+            "id": "2375178541998",
+            "name": "v1.1.0.0.zip"
           },
           {
             "type": "file",
-            "id": "2343936601421",
-            "name": "V1.1.1.0.zip"
+            "id": "2375178268011",
+            "name": "v1.1.1.0.zip"
           },
           {
             "type": "file",
-            "id": "2365375168617",
-            "name": "V1.2.0.0.zip"
+            "id": "2375186108728",
+            "name": "v1.2.0.0.zip"
+          },
+          {
+            "type": "file",
+            "id": "2375183565045",
+            "name": "v1.2.1.0.zip"
           }
         ],
         "summary": {
-          "files": 9,
+          "files": 10,
           "folders": 1
         },
         "status": "SUCCESS"
@@ -738,12 +705,17 @@
       "modified_by": null,
       "contents": {
         "folder_id": "399165116411",
-        "total_items": 4,
+        "total_items": 5,
         "items": [
           {
             "type": "file",
             "id": "2343308594295",
             "name": "Flow.txt"
+          },
+          {
+            "type": "file",
+            "id": "2365568524334",
+            "name": "Padma.ico"
           },
           {
             "type": "file",
@@ -762,7 +734,7 @@
           }
         ],
         "summary": {
-          "files": 4,
+          "files": 5,
           "folders": 0
         },
         "status": "SUCCESS"

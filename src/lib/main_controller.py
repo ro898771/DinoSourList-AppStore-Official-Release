@@ -1047,6 +1047,7 @@ class MainWindow(QMainWindow):
             # Connect signals
             card.download_clicked.connect(self._on_store_download)
             card.guide_clicked.connect(self._on_store_guide_clicked)
+            card.readme_clicked.connect(self._on_store_readme_clicked)
             card.card_refresh_clicked.connect(self._on_card_refresh_clicked)
 
             self.store_card_references[software.get('folder_name', software['name'])] = card
@@ -2247,7 +2248,96 @@ class MainWindow(QMainWindow):
             )
             msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
             msg_box.exec()
-    
+
+    def _on_store_readme_clicked(self, software_name):
+        """Handle ReadMe label click from a Store card.
+
+        Opens the readme file (per Flow.txt [ReadMe] Flag=/file=, falling back
+        to a bare README.md in the App_Store folder) in the same in-app
+        GitHub-style viewer used by the Dashboard's ReadMe button. Store items
+        may not be installed yet, so this only ever looks in App_Store --
+        there's no Software_Downloaded folder to fall back to here.
+        """
+        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
+        readme_path = None
+        base_folder = None
+
+        for folder in app_store_path.iterdir():
+            if not folder.is_dir() or not folder.name.startswith(software_name):
+                continue
+
+            flow_txt = folder / "Flow.txt"
+            readme_flag = False
+            readme_filename = None
+            current_section = None
+
+            if flow_txt.exists():
+                try:
+                    with open(flow_txt, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith('[') and line.endswith(']'):
+                                current_section = line[1:-1].lower()
+                                continue
+                            if current_section == 'readme' and '=' in line:
+                                key, _, value = line.partition('=')
+                                key = key.strip().lower()
+                                value = value.strip()
+                                if key == 'flag':
+                                    readme_flag = value.lower() == 'true'
+                                elif key == 'file':
+                                    readme_filename = value
+                except Exception as e:
+                    print(f"[README] Error reading Flow.txt for {folder.name}: {e}")
+
+            if readme_flag and readme_filename:
+                candidate = folder / readme_filename
+                print(f"[README] [{folder.name}] Flow.txt readme={readme_filename}  exists={candidate.exists()}")
+                if candidate.exists():
+                    readme_path = candidate
+                    base_folder = folder
+                    break
+            else:
+                # Fallback: bare README.md directly in the App_Store folder, if present
+                fallback = folder / "README.md"
+                if fallback.exists():
+                    readme_path = fallback
+                    base_folder = folder
+                    break
+
+        if readme_path and readme_path.exists():
+            try:
+                with open(readme_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                viewer = ReadmeViewer(
+                    f"{software_name} - README",
+                    content,
+                    folder_path=str(base_folder),
+                    parent=self
+                )
+                viewer.exec()
+            except Exception as e:
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("Error")
+                msg_box.setText(f"Could not read readme: {e}")
+                msg_box.setIcon(QMessageBox.Warning)
+                msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
+                msg_box.exec()
+        else:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("No README")
+            msg_box.setText(
+                f"No README found for {software_name}.\n\n"
+                f"Make sure Flow.txt has a [ReadMe] section with Flag=True "
+                f"and the file has been downloaded via Refresh."
+            )
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
+            msg_box.exec()
+
     def _on_card_refresh_clicked(self, folder_name, folder_id):
         """Handle the tiny per-card refresh button on a Store card."""
         if not folder_id:

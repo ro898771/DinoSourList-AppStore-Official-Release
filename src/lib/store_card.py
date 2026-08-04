@@ -16,6 +16,7 @@ class StoreCard(QFrame):
     """Card for displaying software in the store with version selection and download"""
     download_clicked = Signal(str, str, str)  # Emits (software_name, version, file_id)
     guide_clicked = Signal(str)               # Emits software_name when guide is clicked
+    readme_clicked = Signal(str)              # Emits software_name when ReadMe is clicked
     card_refresh_clicked = Signal(str, str)   # Emits (folder_name, folder_id)
 
     def __init__(self, software_name, author_name, icon_path=None, json_path=None,
@@ -29,7 +30,7 @@ class StoreCard(QFrame):
         self.folder_id = folder_id or ""
         self.versions_data = []  # List of (version, file_id) tuples
 
-        self.setFixedSize(320, 280)
+        self.setFixedSize(320, 312)
         self.setStyleSheet(CARD_STYLE)
 
         layout = QVBoxLayout(self)
@@ -37,10 +38,14 @@ class StoreCard(QFrame):
         layout.setSpacing(5)
         layout.setContentsMargins(10, 15, 10, 10)
 
-        # Top row: Details label (left) + tiny refresh button (right)
+        # Top row: Details + ReadMe labels stacked (left) + tiny refresh button (right)
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(4)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(4)
+        left_col.setAlignment(Qt.AlignTop)
 
         self.guide_label = ClickableLabel("Details")
         self.guide_label.setAlignment(Qt.AlignCenter)
@@ -54,7 +59,23 @@ class StoreCard(QFrame):
             "#5a32a3"       # Darker purple text on hover
         ))
         self.guide_label.clicked.connect(self._on_guide_clicked)
-        top_row.addWidget(self.guide_label)
+        left_col.addWidget(self.guide_label)
+
+        self.readme_label = ClickableLabel("ReadMe")
+        self.readme_label.setAlignment(Qt.AlignCenter)
+        self.readme_label.setCursor(Qt.PointingHandCursor)
+        self.readme_label.setFixedHeight(28)
+        self.readme_label.setFixedWidth(70)
+        self.readme_label.setStyleSheet(get_version_label_style(
+            "#007bff",      # Blue text
+            "#cfe2ff",      # Light blue background
+            "#b6d4fe",      # Darker blue on hover
+            "#0056b3"       # Darker blue text on hover
+        ))
+        self.readme_label.clicked.connect(self._on_readme_clicked)
+        left_col.addWidget(self.readme_label)
+
+        top_row.addLayout(left_col)
 
         top_row.addStretch()
 
@@ -241,6 +262,10 @@ class StoreCard(QFrame):
     def _on_guide_clicked(self):
         """Handle guide label click"""
         self.guide_clicked.emit(self.software_name)
+
+    def _on_readme_clicked(self):
+        """Handle ReadMe label click"""
+        self.readme_clicked.emit(self.software_name)
 
     def _on_card_refresh_clicked(self):
         """Handle tiny per-card refresh button click"""
