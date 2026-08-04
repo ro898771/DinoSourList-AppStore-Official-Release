@@ -9,7 +9,7 @@
 - FaceLift UI LayOut
 - Add README UI on Software Dashboard
 
-## 💡 Proposed Solution: Centralized Application Dashboard
+## 💡 What is Dinosaur-List? 
 
 We are building a unified dashboard that consolidates all applications into a single, organized platform — integrated with Box shared drive to streamline the entire software lifecycle.
 

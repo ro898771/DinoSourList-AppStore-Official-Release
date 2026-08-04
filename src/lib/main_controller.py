@@ -295,7 +295,7 @@ class MainWindow(QMainWindow):
         # Pre-warm the Store page's data cache now, before the window is shown,
         # so the first navigation to the Store tab doesn't pay for the App_Store
         # scan — it just reads the already-populated cache.
-        self._load_store_software()
+        self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(self._load_store_software())}")
         self._sync_installed_tools("launch")
         self._register_app_user()
         # Apply correct visibility and placeholder for the initial page
@@ -914,6 +914,14 @@ class MainWindow(QMainWindow):
         self.sidebar_ip_label.setStyleSheet(SIDEBAR_INFO_STYLE)
         sidebar_layout.addWidget(self.sidebar_ip_label)
 
+        self.sidebar_local_count_label = QLabel("📥  Local Downloads: 0")
+        self.sidebar_local_count_label.setStyleSheet(SIDEBAR_INFO_STYLE)
+        sidebar_layout.addWidget(self.sidebar_local_count_label)
+
+        self.sidebar_store_count_label = QLabel("🏪  Software Store: 0")
+        self.sidebar_store_count_label.setStyleSheet(SIDEBAR_INFO_STYLE)
+        sidebar_layout.addWidget(self.sidebar_store_count_label)
+
         sidebar_layout.addSpacing(8)
 
         self.sidebar_logout_btn = QPushButton("🚪  Exit")
@@ -1024,6 +1032,8 @@ class MainWindow(QMainWindow):
             # rail -- hide them rather than show something clipped.
             self.sidebar_user_label.setVisible(False)
             self.sidebar_ip_label.setVisible(False)
+            self.sidebar_local_count_label.setVisible(False)
+            self.sidebar_store_count_label.setVisible(False)
             self.sidebar_logout_btn.setText("🚪")
             self.sidebar_logout_btn.setToolTip("Exit")
         self._update_sidebar_buttons()
@@ -1064,6 +1074,8 @@ class MainWindow(QMainWindow):
                     btn.setToolTip("")
                 self.sidebar_user_label.setVisible(True)
                 self.sidebar_ip_label.setVisible(True)
+                self.sidebar_local_count_label.setVisible(True)
+                self.sidebar_store_count_label.setVisible(True)
                 self.sidebar_logout_btn.setText("🚪  Exit")
                 self.sidebar_logout_btn.setToolTip("Exit the app")
                 self._update_sidebar_buttons()
@@ -1266,6 +1278,8 @@ class MainWindow(QMainWindow):
                 col = 0
                 row += 1
 
+        self.sidebar_local_count_label.setText(f"📥  Local Downloads: {len(self.all_software_data)}")
+
         # Update status — skip while a refresh/download is in progress so we
         # don't stomp on its live progress text (it's re-applied when done)
         if not self._is_busy:
@@ -1313,6 +1327,7 @@ class MainWindow(QMainWindow):
             container_layout.addStretch()
             self.cards_layout.addWidget(container, 0, 0, 4, 4)
             self.status_label.setText(f"📦 {self.page_names[self.current_page]} - No data")
+            self.sidebar_store_count_label.setText("🏪  Software Store: 0")
             return
         
         # Display ALL cards in grid (4 columns, scrollable rows)
@@ -1346,6 +1361,8 @@ class MainWindow(QMainWindow):
                 col = 0
                 row += 1
         
+        self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(store_data)}")
+
         # Update status — skip while a refresh/download is in progress so we
         # don't stomp on its live progress text (it's re-applied when done)
         if not self._is_busy:
