@@ -111,19 +111,19 @@ TITLE_STYLE = """
 # Refresh Button Styles
 REFRESH_BUTTON_STYLE = """
     QPushButton {
-        background-color: #007bff;
-        color: white;
+        background-color: #eef0ff;
+        color: #4338ca;
         border: none;
-        border-radius: 6px;
+        border-radius: 10px;
         padding: 10px 20px;
         font-size: 14px;
-        font-weight: 500;
+        font-weight: 700;
     }
     QPushButton:hover {
-        background-color: #0056b3;
+        background-color: #e3e6ff;
     }
     QPushButton:pressed {
-        background-color: #004085;
+        background-color: #d7dbff;
     }
 """
 
@@ -249,6 +249,119 @@ PAGINATION_LABEL_STYLE = """
         font-size: 14px;
         font-weight: 500;
         padding: 0px 10px;
+    }
+"""
+
+# Sidebar Navigation Styles (branding header + nav items + pinned AI Assistant)
+SIDEBAR_STYLE = """
+    QWidget {
+        background-color: #ffffff;
+        border-right: 1px solid #e9ecef;
+    }
+"""
+
+SIDEBAR_TITLE_STYLE = """
+    QLabel {
+        font-size: 19px;
+        font-weight: 800;
+        color: #3730a3;
+        background-color: transparent;
+        border: none;
+    }
+"""
+
+SIDEBAR_ITEM_STYLE = """
+    QPushButton {
+        background-color: transparent;
+        color: #6b7280;
+        border: none;
+        border-radius: 14px;
+        padding: 14px 16px;
+        font-size: 15px;
+        font-weight: 600;
+        text-align: left;
+    }
+    QPushButton:hover {
+        background-color: #f3f4f8;
+    }
+"""
+
+SIDEBAR_ITEM_ACTIVE_STYLE = """
+    QPushButton {
+        background-color: #eef0ff;
+        color: #4338ca;
+        border: none;
+        border-radius: 14px;
+        padding: 14px 16px;
+        font-size: 15px;
+        font-weight: 700;
+        text-align: left;
+    }
+    QPushButton:hover {
+        background-color: #e3e6ff;
+    }
+"""
+
+# Collapsed-rail variants (icon-only, centered) -- same palette as the
+# expanded nav item styles above, just centered with no room reserved for a
+# text label.
+SIDEBAR_ITEM_STYLE_COLLAPSED = """
+    QPushButton {
+        background-color: transparent;
+        color: #6b7280;
+        border: none;
+        border-radius: 14px;
+        padding: 14px 0px;
+        font-size: 18px;
+        font-weight: 600;
+        text-align: center;
+    }
+    QPushButton:hover {
+        background-color: #f3f4f8;
+    }
+"""
+
+SIDEBAR_ITEM_ACTIVE_STYLE_COLLAPSED = """
+    QPushButton {
+        background-color: #eef0ff;
+        color: #4338ca;
+        border: none;
+        border-radius: 14px;
+        padding: 14px 0px;
+        font-size: 18px;
+        font-weight: 700;
+        text-align: center;
+    }
+    QPushButton:hover {
+        background-color: #e3e6ff;
+    }
+"""
+
+# Sidebar footer: current user/IP (from LocalIdentity) + Log Out
+SIDEBAR_INFO_STYLE = """
+    QLabel {
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 500;
+        padding: 2px 4px;
+        background-color: transparent;
+        border: none;
+    }
+"""
+
+SIDEBAR_LOGOUT_STYLE = """
+    QPushButton {
+        background-color: #fdecec;
+        color: #dc2626;
+        border: none;
+        border-radius: 12px;
+        padding: 10px 14px;
+        font-size: 14px;
+        font-weight: 700;
+        text-align: left;
+    }
+    QPushButton:hover {
+        background-color: #fbd5d5;
     }
 """
 

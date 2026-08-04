@@ -6,6 +6,8 @@
 - Resolved Warning for Path Directory
 - Log API Fixing
 - Filter added OR operation for Developer Name / Tool Name
+- FaceLift UI LayOut
+- Add README UI on Software Dashboard
 
 ## 💡 Proposed Solution: Centralized Application Dashboard
 

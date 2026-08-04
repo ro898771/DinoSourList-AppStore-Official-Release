@@ -11,9 +11,11 @@ from threading import Thread
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                 QLabel, QPushButton, QScrollArea, QGridLayout,
                                 QMessageBox, QTextBrowser, QDialog, QApplication,
-                                QLineEdit, QComboBox, QFrame, QTextEdit)
-from PySide6.QtCore import Qt, QUrl, Signal, QObject, QTimer
-from PySide6.QtGui import QFont, QMovie, QTextCursor
+                                QLineEdit, QComboBox, QFrame, QTextEdit,
+                                QSpacerItem, QSizePolicy)
+from PySide6.QtCore import (Qt, QUrl, Signal, QObject, QTimer, QSize, QPointF,
+                             QVariantAnimation, QEasingCurve)
+from PySide6.QtGui import QFont, QMovie, QTextCursor, QPixmap, QPainter, QPen, QColor, QIcon
 
 # Try to import WebEngineView for embedded browser
 try:
@@ -38,8 +40,9 @@ from .readme_viewer import ReadmeViewer
 from .styles import (
     MAIN_WINDOW_STYLE, TITLE_STYLE, REFRESH_BUTTON_STYLE,
     STATUS_LABEL_STYLE, MESSAGE_BOX_STYLE, EXIT_DIALOG_STYLE,
-    PAGINATION_NAV_BUTTON_STYLE, PAGINATION_PAGE_BUTTON_STYLE,
-    PAGINATION_PAGE_BUTTON_ACTIVE_STYLE, PAGINATION_LABEL_STYLE,
+    SIDEBAR_STYLE, SIDEBAR_TITLE_STYLE, SIDEBAR_ITEM_STYLE, SIDEBAR_ITEM_ACTIVE_STYLE,
+    SIDEBAR_ITEM_STYLE_COLLAPSED, SIDEBAR_ITEM_ACTIVE_STYLE_COLLAPSED,
+    SIDEBAR_INFO_STYLE, SIDEBAR_LOGOUT_STYLE,
     SCROLL_BAR_STYLE, COMBOBOX_STYLE, get_version_label_style
 )
 from .clickable_label import ClickableLabel
@@ -116,7 +119,10 @@ class MainWindow(QMainWindow):
         if _ico.exists():
             from PySide6.QtGui import QIcon
             self.setWindowIcon(QIcon(str(_ico)))
-        self.resize(1500, 1000)
+        # Launch with 3 columns (sidebar expanded) -- fits comfortably on
+        # smaller laptop screens. Collapsing the sidebar (see _toggle_sidebar)
+        # switches to 4 columns and grows the window to match.
+        self.resize(self._ideal_window_width(3, 220), 1000)
         
         # Apply modern styles
         self.setStyleSheet(MAIN_WINDOW_STYLE)
@@ -143,13 +149,29 @@ class MainWindow(QMainWindow):
             "News"
         ]
         
-        # Central widget
+        # Central widget: sidebar (left) + main content (right)
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # Left navigation sidebar (replaces the old bottom pagination bar)
+        self._setup_sidebar(root_layout, central)
+
+        # Main content area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
-        
+        root_layout.addWidget(content_widget, 1)
+
+        # content_widget is created (and thus stacked) *after* the floating
+        # toggle button, so without this it silently paints over the button's
+        # right half -- invisible exactly where the ">" chevron's tip sits
+        # when collapsed, which is why only that direction looked broken.
+        self.sidebar_toggle_btn.raise_()
+
         # Header with title and loading indicator
         header_layout = QHBoxLayout()
         header_layout.setSpacing(10)
@@ -161,49 +183,6 @@ class MainWindow(QMainWindow):
         
         # Spacer to push right-side items to the edge
         header_layout.addStretch()
-
-        # AI Assistant badge — GIF icon + text, visible only on the Store page (page index 1)
-        self.ai_btn = QWidget()
-        self.ai_btn.setCursor(Qt.PointingHandCursor)
-        self.ai_btn.setStyleSheet("QWidget { background: transparent; }")
-        _ai_row = QHBoxLayout(self.ai_btn)
-        _ai_row.setContentsMargins(8, 4, 8, 4)
-        _ai_row.setSpacing(6)
-
-        # Animated dinosaur GIF
-        _ai_gif_lbl = ClickableLabel()
-        _dino_path = Path(__file__).parent.parent.parent / "Sw-icon" / "d2.gif"
-        if _dino_path.exists():
-            from PySide6.QtCore import QSize as _QSize
-            self._dino_badge_movie = QMovie(str(_dino_path))
-            self._dino_badge_movie.setScaledSize(_QSize(50, 50))
-            _ai_gif_lbl.setMovie(self._dino_badge_movie)
-            self._dino_badge_movie.start()
-        else:
-            _ai_gif_lbl.setText("🦕")
-        _ai_gif_lbl.setCursor(Qt.PointingHandCursor)
-        _ai_gif_lbl.clicked.connect(self._on_ai_assistant_clicked)
-        _ai_row.addWidget(_ai_gif_lbl)
-
-        # Text
-        _ai_text_lbl = ClickableLabel("AI Assistant")
-        _ai_text_lbl.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
-                font-weight: 600;
-                color: #0a58ca;
-                background-color: transparent;
-                border: none;
-                padding: 4px 0;
-            }
-            QLabel:hover { color: #084298; }
-        """)
-        _ai_text_lbl.clicked.connect(self._on_ai_assistant_clicked)
-        _ai_row.addWidget(_ai_text_lbl)
-
-        self.ai_btn.hide()
-        header_layout.addWidget(self.ai_btn)
-        header_layout.addSpacing(8)
 
         # Loading GIF indicator (top right)
         self.loading_label = QLabel()
@@ -233,16 +212,10 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(header_layout)
         
-        # Controls row: Refresh button + filter box (side by side)
+        # Controls row: filter box
         controls_row = QHBoxLayout()
         controls_row.setSpacing(10)
         controls_row.setContentsMargins(0, 0, 0, 0)
-
-        self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.setMaximumWidth(100)
-        self.refresh_btn.setStyleSheet(REFRESH_BUTTON_STYLE)
-        self.refresh_btn.clicked.connect(self.refresh_data)
-        controls_row.addWidget(self.refresh_btn)
 
         # Filter text box — visible on Page 2 (Store) only
         self.filter_edit = QLineEdit()
@@ -266,7 +239,28 @@ class MainWindow(QMainWindow):
         self.filter_edit.textChanged.connect(self._on_filter_changed)
         controls_row.addWidget(self.filter_edit)
 
+        # Spacer to push the Refresh button to the right, sharing this row's
+        # Y-axis with the filter box instead of sitting up in the header.
         controls_row.addStretch()
+
+        # Refresh button -- aligned above the last (4th) card of the grid below,
+        # not just floated to the window's edge.
+        self.refresh_btn = QPushButton("⟳  Refresh")
+        self.refresh_btn.setMaximumWidth(120)
+        self.refresh_btn.setStyleSheet(REFRESH_BUTTON_STYLE)
+        self.refresh_btn.clicked.connect(self.refresh_data)
+        controls_row.addWidget(self.refresh_btn)
+
+        # Trailing gap, sized by _sync_refresh_button_alignment() (called once
+        # below and again on every resizeEvent/sidebar toggle) rather than a
+        # fixed constant -- the grid is left-aligned so its position never
+        # moves, but this button is positioned via the addStretch() above,
+        # which DOES move with the window's width. A static gap would only
+        # have been correct at one exact window size.
+        self._refresh_align_spacer = QSpacerItem(0, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        controls_row.addItem(self._refresh_align_spacer)
+        self._refresh_align_layout = controls_row
+
         layout.addLayout(controls_row)
         
         # Scroll area
@@ -277,13 +271,14 @@ class MainWindow(QMainWindow):
         self.cards_layout = QGridLayout(self.cards_container)
         self.cards_layout.setSpacing(25)
         self.cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.cards_layout.setContentsMargins(20, 20, 20, 20)
+        # 0 left/right margin -- lines up the first card's left edge with the
+        # header/filter box's left edge (both otherwise governed solely by
+        # content_widget's own 20px margin). Small top margin keeps a bit of
+        # breathing room below the filter box without reintroducing a big gap.
+        self.cards_layout.setContentsMargins(0, 8, 0, 20)
         scroll.setWidget(self.cards_container)
         layout.addWidget(scroll)
-        
-        # Pagination controls
-        self._setup_pagination_controls(layout)
-        
+
         # Status - Black text
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
@@ -305,6 +300,64 @@ class MainWindow(QMainWindow):
         self._register_app_user()
         # Apply correct visibility and placeholder for the initial page
         self._update_refresh_button_visibility()
+        # Set the Refresh button's initial alignment gap (resizeEvent handles
+        # every change after this, including maximize/restore/manual resize).
+        self._sync_refresh_button_alignment()
+
+    def resizeEvent(self, event):
+        """Keep the Refresh button aligned with the grid's last card on any
+        resize (maximize, restore from minimized, manual drag-resize)."""
+        super().resizeEvent(event)
+        self._sync_refresh_button_alignment()
+
+    def _current_card_columns(self):
+        """Number of card-grid columns for the Dashboard/Store pages.
+
+        Fewer columns (3) while the sidebar is expanded, so the grid fits
+        comfortably on smaller laptop screens; collapsing the sidebar to an
+        icon-only rail frees enough width for a 4th column.
+        """
+        return 4 if getattr(self, "_sidebar_collapsed", False) else 3
+
+    def _ideal_window_width(self, num_cols, sidebar_width):
+        """Window width that comfortably fits *num_cols* card columns next to
+        a sidebar of *sidebar_width*, with room for the scrollbar and a little
+        breathing room on the right (see _sync_refresh_button_alignment for
+        the matching per-column-count grid math)."""
+        CARD_W, GAP, CONTENT_MARGIN, SCROLLBAR, BUFFER = 320, 25, 20, 16, 40
+        grid_width = num_cols * CARD_W + (num_cols - 1) * GAP
+        content_width = CONTENT_MARGIN * 2 + grid_width + SCROLLBAR + BUFFER
+        return sidebar_width + content_width
+
+    def _sync_refresh_button_alignment(self):
+        """Keep the Refresh button's right edge aligned with the last card's
+        right edge in the grid below.
+
+        The grid is left-aligned, so its position never moves regardless of
+        window size. This button, however, is positioned by a stretch that
+        fills to the row's right edge (see controls_row above) -- which DOES
+        move whenever the window is resized, maximized, or restored, or the
+        sidebar is collapsed/expanded (which also changes the column count,
+        see _current_card_columns). A single fixed gap can only be correct at
+        one specific size/column-count, so this recomputes it from the
+        *current* geometry every time instead.
+        """
+        if not hasattr(self, "sidebar_widget") or not hasattr(self, "_refresh_align_spacer"):
+            return  # called once before the sidebar/spacer exist yet -- skip
+
+        # Constant for a given column count regardless of window size:
+        # content margin (20) + N cards (320 each) + (N-1) gaps (25 each) --
+        # see cards_layout's margins above for why this starts at 20px.
+        num_cols = self._current_card_columns()
+        grid_right_edge = 20 + num_cols * 320 + (num_cols - 1) * 25
+
+        content_width = self.width() - self.sidebar_widget.width()
+        row_right_bound = content_width - 20  # content_widget's own right margin
+        gap = max(row_right_bound - grid_right_edge, 0)
+
+        self._refresh_align_spacer.changeSize(gap, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        self._refresh_align_layout.invalidate()
+        self._refresh_align_layout.activate()
 
     def _load_app_version(self):
         """Read {app_name, version} from config-record/version.json.
@@ -747,58 +800,311 @@ class MainWindow(QMainWindow):
         # Force UI to update immediately
         QApplication.processEvents()
     
-    def _setup_pagination_controls(self, layout):
-        """Setup pagination controls with left/right navigation and page buttons"""
-        pagination_container = QWidget()
-        pagination_layout = QHBoxLayout(pagination_container)
-        pagination_layout.setContentsMargins(20, 10, 20, 10)
-        pagination_layout.setSpacing(15)
-        
-        # Left arrow button
-        self.btn_prev = QPushButton("◀ Previous")
-        self.btn_prev.setStyleSheet(PAGINATION_NAV_BUTTON_STYLE)
-        self.btn_prev.clicked.connect(self.go_to_previous_page)
-        pagination_layout.addWidget(self.btn_prev)
-        
-        # Add spacer
-        pagination_layout.addStretch()
-        
-        # Page buttons with numbers (1, 2, 3, 4, 5)
-        self.page_buttons = []
-        for i in range(self.total_pages):
-            btn = QPushButton(str(i + 1))
-            btn.setStyleSheet(PAGINATION_PAGE_BUTTON_STYLE)
-            btn.clicked.connect(lambda checked, page=i: self.go_to_page(page))
-            self.page_buttons.append(btn)
-            pagination_layout.addWidget(btn)
-        
-        # Add spacer
-        pagination_layout.addStretch()
-        
-        # Right arrow button
-        self.btn_next = QPushButton("Next ▶")
-        self.btn_next.setStyleSheet(PAGINATION_NAV_BUTTON_STYLE)
-        self.btn_next.clicked.connect(self.go_to_next_page)
-        pagination_layout.addWidget(self.btn_next)
-        
-        layout.addWidget(pagination_container)
-        
-        # Update button states
-        self._update_pagination_buttons()
-    
-    def _update_pagination_buttons(self):
-        """Update pagination button states based on current page"""
-        # Circular navigation - always enable prev/next buttons
-        self.btn_prev.setEnabled(True)
-        self.btn_next.setEnabled(True)
-        
-        # Update page button styles
-        for i, btn in enumerate(self.page_buttons):
-            if i == self.current_page:
-                btn.setStyleSheet(PAGINATION_PAGE_BUTTON_ACTIVE_STYLE)
+    def _setup_sidebar(self, root_layout, central):
+        """Build the left-side navigation panel: branding header (whose logo
+        icon doubles as the AI Assistant trigger), page nav items, and a
+        collapse/expand toggle that shrinks the panel to an icon-only rail.
+        """
+        self._sidebar_expanded_width = 220
+        self._sidebar_collapsed_width = 80
+        self._sidebar_collapsed = False
+        self._sidebar_anim = None
+        self._logo_size_expanded = 56
+        self._logo_size_collapsed = 40
+
+        sidebar = QWidget()
+        sidebar.setFixedWidth(self._sidebar_expanded_width)
+        sidebar.setStyleSheet(SIDEBAR_STYLE)
+        self.sidebar_widget = sidebar
+
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(16, 20, 16, 20)
+        sidebar_layout.setSpacing(4)
+        sidebar_layout.setAlignment(Qt.AlignTop)
+
+        # Branding header repurposed as the AI Assistant trigger: animated dino
+        # icon + "AI Assistant" label, both clickable. The label is hidden
+        # when the sidebar collapses, leaving just the icon.
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+
+        self.sidebar_logo_label = ClickableLabel()
+        self.sidebar_logo_label.setFixedSize(self._logo_size_expanded, self._logo_size_expanded)
+        self.sidebar_logo_label.setAlignment(Qt.AlignCenter)
+        self.sidebar_logo_label.setCursor(Qt.PointingHandCursor)
+        self.sidebar_logo_label.setToolTip("Open AI Assistant")
+        self.sidebar_logo_label.setStyleSheet("""
+            QLabel {
+                background-color: #e6f7f0;
+                border-radius: 12px;
+            }
+        """)
+        dino_path = Path(__file__).parent.parent.parent / "Sw-icon" / "d2.gif"
+        if dino_path.exists():
+            self._sidebar_ai_movie = QMovie(str(dino_path))
+            self._sidebar_ai_movie.setScaledSize(QSize(44, 44))
+            self.sidebar_logo_label.setMovie(self._sidebar_ai_movie)
+            self._sidebar_ai_movie.start()
+        else:
+            self.sidebar_logo_label.setText("🦕")
+        self.sidebar_logo_label.clicked.connect(self._on_ai_assistant_clicked)
+        header_row.addWidget(self.sidebar_logo_label)
+
+        self.sidebar_title_label = ClickableLabel("AI Assistant")
+        self.sidebar_title_label.setStyleSheet(SIDEBAR_TITLE_STYLE)
+        self.sidebar_title_label.setWordWrap(True)
+        self.sidebar_title_label.setCursor(Qt.PointingHandCursor)
+        self.sidebar_title_label.setToolTip("Open AI Assistant")
+        self.sidebar_title_label.clicked.connect(self._on_ai_assistant_clicked)
+        header_row.addWidget(self.sidebar_title_label, 1)
+
+        sidebar_layout.addLayout(header_row)
+        sidebar_layout.addSpacing(24)
+
+        # Page navigation items -- icon and label kept separate so the
+        # collapsed rail can show icon-only text on the same buttons.
+        nav_items = [
+            (0, "🚀", "Local Dashboard"),
+            (1, "🏪", "Software Store"),
+            (2, "🔗", "Useful Links"),
+            (3, "📰", "News & Updates"),
+        ]
+
+        self.sidebar_buttons = []
+        self._sidebar_nav_icons = []
+        self._sidebar_nav_labels = []
+        for page_index, icon, label in nav_items:
+            btn = QPushButton(f"{icon}  {label}")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(48)
+            btn.clicked.connect(lambda checked, page=page_index: self.go_to_page(page))
+            sidebar_layout.addWidget(btn)
+            self.sidebar_buttons.append(btn)
+            self._sidebar_nav_icons.append(icon)
+            self._sidebar_nav_labels.append(label)
+
+        sidebar_layout.addStretch()
+
+        # Footer: current user/IP (via LocalIdentity) + Log Out, pinned to the
+        # bottom below a divider, mirroring the reference layout's stats/logout
+        # footer -- adapted to what's actually relevant for this app.
+        footer_divider = QFrame()
+        footer_divider.setFrameShape(QFrame.HLine)
+        footer_divider.setStyleSheet(
+            "QFrame { background-color: #e9ecef; max-height: 1px; border: none; }"
+        )
+        sidebar_layout.addWidget(footer_divider)
+        sidebar_layout.addSpacing(12)
+
+        self._ensure_user_api_on_path()
+        try:
+            from local_identity import LocalIdentity
+            identity = LocalIdentity()
+            username = identity.get_current_username()
+            ip_address = identity.get_local_ip()
+        except Exception as exc:
+            username, ip_address = "Unknown", "Unknown"
+            print(f"[SIDEBAR] Could not resolve local identity: {exc}")
+
+        self.sidebar_user_label = QLabel(f"👤  {username}")
+        self.sidebar_user_label.setStyleSheet(SIDEBAR_INFO_STYLE)
+        sidebar_layout.addWidget(self.sidebar_user_label)
+
+        self.sidebar_ip_label = QLabel(f"🌐  {ip_address}")
+        self.sidebar_ip_label.setStyleSheet(SIDEBAR_INFO_STYLE)
+        sidebar_layout.addWidget(self.sidebar_ip_label)
+
+        sidebar_layout.addSpacing(8)
+
+        self.sidebar_logout_btn = QPushButton("🚪  Exit")
+        self.sidebar_logout_btn.setCursor(Qt.PointingHandCursor)
+        self.sidebar_logout_btn.setFixedHeight(44)
+        self.sidebar_logout_btn.setStyleSheet(SIDEBAR_LOGOUT_STYLE)
+        self.sidebar_logout_btn.setToolTip("Exit the app")
+        self.sidebar_logout_btn.clicked.connect(self.close)
+        sidebar_layout.addWidget(self.sidebar_logout_btn)
+
+        root_layout.addWidget(sidebar)
+
+        # Collapse/expand toggle -- floats over the sidebar/content border
+        # (parented to the central widget, not either layout) so it stays in
+        # the same spot regardless of which side "owns" that border. Uses a
+        # real arrow icon (not a text glyph) sized up so it's easy to see.
+        self.sidebar_toggle_btn = QPushButton(central)
+        self.sidebar_toggle_btn.setFixedSize(36, 36)
+        self.sidebar_toggle_btn.setIconSize(QSize(20, 20))
+        self.sidebar_toggle_btn.setIcon(self._make_chevron_icon("left"))
+        self.sidebar_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.sidebar_toggle_btn.setToolTip("Collapse sidebar")
+        self.sidebar_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 18px;
+            }
+            QPushButton:hover { background-color: #f3f4f8; }
+        """)
+        self.sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
+        self.sidebar_toggle_btn.raise_()
+        self._position_sidebar_toggle()
+
+        self._update_sidebar_buttons()
+
+    def _position_sidebar_toggle(self):
+        """Keep the collapse/expand toggle straddling the sidebar/content border."""
+        x = self.sidebar_widget.width() - self.sidebar_toggle_btn.width() // 2
+        self.sidebar_toggle_btn.move(x, 32)
+
+    def _make_chevron_icon(self, direction="left", size=24, color="#6b7280", thickness=3):
+        """Draw a bold chevron icon (not text) for the sidebar collapse toggle.
+
+        Qt's built-in QStyle.SP_ArrowLeft/Right standard icons render very
+        faint/thin on some platform styles -- easy to miss at small sizes.
+        Drawing our own guarantees a crisp, high-contrast arrow regardless
+        of the active OS theme.
+        """
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(color))
+        pen.setWidth(thickness)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+
+        margin = size * 0.28
+        mid_y = size / 2
+        if direction == "left":
+            tip, top, bottom = QPointF(margin, mid_y), QPointF(size - margin, margin), QPointF(size - margin, size - margin)
+        else:
+            tip, top, bottom = QPointF(size - margin, mid_y), QPointF(margin, margin), QPointF(margin, size - margin)
+
+        painter.drawLine(top, tip)
+        painter.drawLine(tip, bottom)
+        painter.end()
+
+        return QIcon(pixmap)
+
+    def _set_sidebar_logo_size(self, size):
+        """Resize the AI logo icon (and its movie) to *size*x*size*."""
+        self.sidebar_logo_label.setFixedSize(size, size)
+        if hasattr(self, "_sidebar_ai_movie"):
+            movie_size = size - 12  # keep the same ~6px padding around the gif as before
+            self._sidebar_ai_movie.setScaledSize(QSize(movie_size, movie_size))
+
+    def _toggle_sidebar(self):
+        """Collapse the sidebar to an icon-only rail, or expand it back, with
+        a smooth width animation instead of an instant snap.
+
+        Content changes (label text, title visibility, logo size) are timed
+        asymmetrically around the animation: collapsing switches to icon-only
+        immediately (short text never overflows, even at the still-wide
+        starting size), while expanding waits until the animation finishes to
+        reveal full labels (so they're never clipped mid-animation by a
+        sidebar that hasn't reached full width yet).
+        """
+        if getattr(self, "_sidebar_anim", None) is not None:
+            return  # ignore rapid re-clicks while an animation is in flight
+
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        collapsed = self._sidebar_collapsed
+
+        self.sidebar_toggle_btn.setIcon(self._make_chevron_icon("right" if collapsed else "left"))
+        self.sidebar_toggle_btn.setToolTip("Expand sidebar" if collapsed else "Collapse sidebar")
+
+        if collapsed:
+            self._set_sidebar_logo_size(self._logo_size_collapsed)
+            self.sidebar_title_label.setVisible(False)
+            for btn, icon, label in zip(self.sidebar_buttons, self._sidebar_nav_icons, self._sidebar_nav_labels):
+                btn.setText(icon)
+                btn.setToolTip(label)
+            # No room for arbitrary-length username/IP text in the narrow
+            # rail -- hide them rather than show something clipped.
+            self.sidebar_user_label.setVisible(False)
+            self.sidebar_ip_label.setVisible(False)
+            self.sidebar_logout_btn.setText("🚪")
+            self.sidebar_logout_btn.setToolTip("Exit")
+        self._update_sidebar_buttons()
+
+        start_width = self.sidebar_widget.width()
+        end_width = self._sidebar_collapsed_width if collapsed else self._sidebar_expanded_width
+
+        # The window itself grows/shrinks in lockstep with the sidebar slide,
+        # since 4 columns (collapsed) need noticeably more total width than 3
+        # (expanded) even after accounting for the sidebar's own size change.
+        start_win_width = self.width()
+        end_win_width = self._ideal_window_width(4 if collapsed else 3, end_width)
+
+        anim = QVariantAnimation(self)
+        anim.setDuration(220)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.setStartValue(start_width)
+        anim.setEndValue(end_width)
+
+        def _on_value_changed(width):
+            self.sidebar_widget.setFixedWidth(width)
+            self._position_sidebar_toggle()
+
+            progress = (width - start_width) / (end_width - start_width) if end_width != start_width else 1
+            self.resize(int(start_win_width + progress * (end_win_width - start_win_width)), self.height())
+
+            # content_widget isn't fixed-width, so collapsing/expanding the
+            # sidebar hands its freed/reclaimed width back to content_widget
+            # on every frame -- keep the Refresh button tracking it smoothly.
+            self._sync_refresh_button_alignment()
+
+        def _on_finished():
+            if not collapsed:
+                self._set_sidebar_logo_size(self._logo_size_expanded)
+                self.sidebar_title_label.setVisible(True)
+                for btn, icon, label in zip(self.sidebar_buttons, self._sidebar_nav_icons, self._sidebar_nav_labels):
+                    btn.setText(f"{icon}  {label}")
+                    btn.setToolTip("")
+                self.sidebar_user_label.setVisible(True)
+                self.sidebar_ip_label.setVisible(True)
+                self.sidebar_logout_btn.setText("🚪  Exit")
+                self.sidebar_logout_btn.setToolTip("Exit the app")
+                self._update_sidebar_buttons()
+            # Reflow the card grid to the new column count only once the
+            # window has actually reached its final size (both directions) --
+            # doing it mid-slide risks a brief overflow/scrollbar flash before
+            # the window catches up to the wider 4-column layout.
+            self._display_current_page()
+            self._position_sidebar_toggle()
+            self._sync_refresh_button_alignment()
+            self._sidebar_anim = None
+
+        anim.valueChanged.connect(_on_value_changed)
+        anim.finished.connect(_on_finished)
+        self._sidebar_anim = anim  # keep a reference so it isn't garbage-collected mid-flight
+        anim.start()
+
+    def _update_sidebar_buttons(self):
+        """Highlight the sidebar item matching the current page."""
+        collapsed = self._sidebar_collapsed
+        for i, btn in enumerate(self.sidebar_buttons):
+            is_active = i == self.current_page
+            if collapsed:
+                btn.setStyleSheet(SIDEBAR_ITEM_ACTIVE_STYLE_COLLAPSED if is_active else SIDEBAR_ITEM_STYLE_COLLAPSED)
             else:
-                btn.setStyleSheet(PAGINATION_PAGE_BUTTON_STYLE)
-    
+                btn.setStyleSheet(SIDEBAR_ITEM_ACTIVE_STYLE if is_active else SIDEBAR_ITEM_STYLE)
+
+    def keyPressEvent(self, event):
+        """Up/Down arrow keys move to the previous/next sidebar tab (wraps
+        around). Only fires when no focused child widget (a combobox, a text
+        field's own key handling, etc.) has already consumed the key first.
+        """
+        if event.key() == Qt.Key_Down:
+            self.go_to_page((self.current_page + 1) % self.total_pages)
+            event.accept()
+        elif event.key() == Qt.Key_Up:
+            self.go_to_page((self.current_page - 1) % self.total_pages)
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
     def go_to_page(self, page_number):
         """Navigate to specific page"""
         if 0 <= page_number < self.total_pages:
@@ -806,8 +1112,8 @@ class MainWindow(QMainWindow):
             self._update_page_title()
             self._update_refresh_button_visibility()
             self._display_current_page()
-            self._update_pagination_buttons()
-    
+            self._update_sidebar_buttons()
+
     def _update_page_title(self):
         """Update the page title based on current page"""
         titles = {
@@ -826,9 +1132,6 @@ class MainWindow(QMainWindow):
         on_filtered_page = self.current_page in [0, 1]
         self.filter_edit.setVisible(on_filtered_page)
 
-        # AI Assistant badge: visible only on Page 2 (Store, index 1)
-        self.ai_btn.setVisible(self.current_page == 1)
-
         # Clear filter silently on every page switch so each page starts fresh
         self.filter_edit.blockSignals(True)
         self.filter_edit.clear()
@@ -839,22 +1142,6 @@ class MainWindow(QMainWindow):
             self.filter_edit.setPlaceholderText("🔍  Search installed software…")
         else:
             self.filter_edit.setPlaceholderText("🔍  Search software by name…")
-    
-    def go_to_previous_page(self):
-        """Navigate to previous page (circular - wraps to last page from first)"""
-        self.current_page = (self.current_page - 1) % self.total_pages
-        self._update_page_title()
-        self._update_refresh_button_visibility()
-        self._display_current_page()
-        self._update_pagination_buttons()
-    
-    def go_to_next_page(self):
-        """Navigate to next page (circular - wraps to first page from last)"""
-        self.current_page = (self.current_page + 1) % self.total_pages
-        self._update_page_title()
-        self._update_refresh_button_visibility()
-        self._display_current_page()
-        self._update_pagination_buttons()
     
     @property
     def _is_busy(self):
@@ -975,7 +1262,7 @@ class MainWindow(QMainWindow):
             self.dashboard_folder_name_map[app_store_folder_name] = str(folder)
 
             col += 1
-            if col >= 4:
+            if col >= self._current_card_columns():
                 col = 0
                 row += 1
 
@@ -1053,9 +1340,9 @@ class MainWindow(QMainWindow):
             self.store_card_references[software.get('folder_name', software['name'])] = card
 
             self.cards_layout.addWidget(card, row, col)
-            
+
             col += 1
-            if col >= 4:  # 4 columns
+            if col >= self._current_card_columns():
                 col = 0
                 row += 1
         
@@ -1090,7 +1377,7 @@ class MainWindow(QMainWindow):
                 card.show()
                 matched += 1
                 col += 1
-                if col >= 4:
+                if col >= self._current_card_columns():
                     col = 0
                     row += 1
             else:
@@ -1146,7 +1433,7 @@ class MainWindow(QMainWindow):
                 card.show()
                 matched += 1
                 col += 1
-                if col >= 4:
+                if col >= self._current_card_columns():
                     col = 0
                     row += 1
             else:
@@ -1162,6 +1449,73 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 f"🏪 {self.page_names[1]} — {total} software available"
             )
+
+    def _build_doc_page_html(self, html_body, accent, tint):
+        """Wrap rendered markdown HTML in a clean, modern web-page shell.
+
+        Shared by the News and Useful Links pages so their layout can't drift
+        out of sync -- only the accent/tint colors differ between them.
+        A centered, readable-width column with card-style section headers,
+        replacing the old flat grey full-bleed background.
+        """
+        css = f"""
+            * {{ box-sizing: border-box; }}
+            html, body {{ margin: 0; background: #ffffff; }}
+            body {{
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 15px;
+                color: #24292f;
+                line-height: 1.8;
+            }}
+            .page {{
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 44px 16px 60px 16px;
+            }}
+            h1 {{
+                font-size: 30px;
+                font-weight: 800;
+                color: #1a1d29;
+                margin: 0 0 24px 0;
+            }}
+            h2 {{
+                font-size: 19px;
+                font-weight: 700;
+                color: #1a1d29;
+                margin-top: 34px;
+                margin-bottom: 14px;
+            }}
+            h3 {{
+                font-size: 15px;
+                font-weight: 700;
+                color: {accent};
+                margin-top: 22px;
+                margin-bottom: 8px;
+            }}
+            ul {{ padding-left: 22px; margin-top: 6px; }}
+            li {{ margin-bottom: 9px; }}
+            a {{ color: #0969da; text-decoration: underline; font-weight: 600; }}
+            a:hover {{ color: #0550ae; }}
+            hr {{ border: none; border-top: 1px solid #edeff3; margin: 30px 0; }}
+            blockquote {{
+                background: {tint};
+                border-left: 4px solid {accent};
+                padding: 14px 20px;
+                margin: 22px 0;
+                border-radius: 8px;
+                color: #40465a;
+            }}
+            p {{ margin: 10px 0; }}
+            code {{
+                background: #f1f2f6;
+                padding: 2px 7px;
+                border-radius: 5px;
+                font-family: Consolas, monospace;
+                font-size: 13px;
+                color: #c2255c;
+            }}
+        """
+        return f"<html><head><style>{css}</style></head><body><div class='page'>{html_body}</div></body></html>"
 
     def _display_news_page(self):
         """Display News page — reads all .md files from the News folder and renders them."""
@@ -1210,84 +1564,15 @@ class MainWindow(QMainWindow):
         # sync with the window title when the version bumps.
         combined_md = combined_md.replace("{{APP_VERSION}}", self.app_version_info["version"])
 
-        # ── HTML template with full-width styling ─────────────────────────────
-        CSS = """
-            * { box-sizing: border-box; }
-            body {
-                font-family: 'Segoe UI', Arial, sans-serif;
-                font-size: 15px;
-                color: #212529;
-                line-height: 1.8;
-                margin: 0;
-                padding: 36px 56px;
-                background: #f8f9fa;
-            }
-            h1 {
-                font-size: 28px;
-                color: #fd7e14;
-                border-bottom: 3px solid #fd7e14;
-                padding-bottom: 10px;
-                margin-bottom: 20px;
-            }
-            h2 {
-                font-size: 21px;
-                color: #343a40;
-                margin-top: 36px;
-                margin-bottom: 12px;
-                border-left: 4px solid #fd7e14;
-                padding-left: 12px;
-            }
-            h3 {
-                font-size: 16px;
-                color: #495057;
-                margin-top: 24px;
-                margin-bottom: 8px;
-            }
-            ul {
-                padding-left: 28px;
-                margin-top: 4px;
-            }
-            li {
-                margin-bottom: 8px;
-            }
-            a {
-                color: #0d6efd;
-                text-decoration: underline;
-            }
-            a:hover { color: #0a58ca; }
-            hr {
-                border: none;
-                border-top: 1px solid #dee2e6;
-                margin: 28px 0;
-            }
-            blockquote {
-                background: #fff3cd;
-                border-left: 5px solid #fd7e14;
-                padding: 12px 20px;
-                margin: 20px 0;
-                border-radius: 6px;
-                color: #856404;
-            }
-            p { margin: 10px 0; }
-            code {
-                background: #e9ecef;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-family: Consolas, monospace;
-                font-size: 13px;
-            }
-        """
-
         if MARKDOWN_AVAILABLE:
             html_body = markdown.markdown(combined_md, extensions=["extra", "nl2br"])
         else:
             # Minimal fallback: convert line breaks, but no real markdown parsing
             html_body = combined_md.replace("\n", "<br>")
 
-        full_html = (
-            f"<html><head><style>{CSS}</style></head>"
-            f"<body>{html_body}</body></html>"
-        )
+        # Indigo accent -- matches the sidebar's active-item highlight for a
+        # consistent look across the app instead of the old flat grey page.
+        full_html = self._build_doc_page_html(html_body, accent="#4338ca", tint="#eef0ff")
 
         # ── QTextBrowser fills the outer wrapper ──────────────────────────────
         browser = QTextBrowser()
@@ -1295,20 +1580,20 @@ class MainWindow(QMainWindow):
         browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         browser.setStyleSheet("""
             QTextBrowser {
-                background-color: #f8f9fa;
+                background-color: #ffffff;
                 border: none;
             }
             QScrollBar:vertical {
                 width: 10px;
-                background: #e9ecef;
+                background: #f1f2f6;
                 border-radius: 5px;
             }
             QScrollBar::handle:vertical {
-                background: #adb5bd;
+                background: #c7cad3;
                 border-radius: 5px;
                 min-height: 30px;
             }
-            QScrollBar::handle:vertical:hover { background: #6c757d; }
+            QScrollBar::handle:vertical:hover { background: #9498a6; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
         browser.setHtml(full_html)
@@ -1350,82 +1635,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             md_content = f"*(Error reading link.md: {e})*"
 
-        CSS = """
-            * { box-sizing: border-box; }
-            body {
-                font-family: 'Segoe UI', Arial, sans-serif;
-                font-size: 15px;
-                color: #212529;
-                line-height: 1.8;
-                margin: 0;
-                padding: 36px 56px;
-                background: #f8f9fa;
-            }
-            h1 {
-                font-size: 28px;
-                color: #0d6efd;
-                border-bottom: 3px solid #0d6efd;
-                padding-bottom: 10px;
-                margin-bottom: 20px;
-            }
-            h2 {
-                font-size: 21px;
-                color: #343a40;
-                margin-top: 36px;
-                margin-bottom: 12px;
-                border-left: 4px solid #0d6efd;
-                padding-left: 12px;
-            }
-            h3 {
-                font-size: 16px;
-                color: #495057;
-                margin-top: 24px;
-                margin-bottom: 8px;
-            }
-            ul {
-                padding-left: 28px;
-                margin-top: 4px;
-            }
-            li {
-                margin-bottom: 8px;
-            }
-            a {
-                color: #0d6efd;
-                text-decoration: underline;
-            }
-            a:hover { color: #0a58ca; }
-            hr {
-                border: none;
-                border-top: 1px solid #dee2e6;
-                margin: 28px 0;
-            }
-            blockquote {
-                background: #e7f1ff;
-                border-left: 5px solid #0d6efd;
-                padding: 12px 20px;
-                margin: 20px 0;
-                border-radius: 6px;
-                color: #084298;
-            }
-            p { margin: 10px 0; }
-            code {
-                background: #e9ecef;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-family: Consolas, monospace;
-                font-size: 13px;
-            }
-        """
-
         if MARKDOWN_AVAILABLE:
             html_body = markdown.markdown(md_content, extensions=["extra", "nl2br"])
         else:
             html_body = md_content.replace("\n", "<br>")
 
-        full_html = (
-            f"<html><head><style>{CSS}</style></head>"
-            f"<body>{html_body}</body></html>"
-        )
+        # Teal accent -- ties to the mint background behind the AI Assistant
+        # icon, distinct from News' indigo without breaking the shared palette.
+        full_html = self._build_doc_page_html(html_body, accent="#0d9488", tint="#e6f7f0")
 
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
@@ -1433,20 +1650,20 @@ class MainWindow(QMainWindow):
         browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         browser.setStyleSheet("""
             QTextBrowser {
-                background-color: #f8f9fa;
+                background-color: #ffffff;
                 border: none;
             }
             QScrollBar:vertical {
                 width: 10px;
-                background: #e9ecef;
+                background: #f1f2f6;
                 border-radius: 5px;
             }
             QScrollBar::handle:vertical {
-                background: #adb5bd;
+                background: #c7cad3;
                 border-radius: 5px;
                 min-height: 30px;
             }
-            QScrollBar::handle:vertical:hover { background: #6c757d; }
+            QScrollBar::handle:vertical:hover { background: #9498a6; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
         browser.setHtml(full_html)
@@ -1463,16 +1680,48 @@ class MainWindow(QMainWindow):
         # Show loading indicator
         self.show_loading()
         self._begin_busy_status()
+        token = self._claim_status_owner()
         self.status_label.setText("🔄 Refreshing data from Box (scanning folders recursively)...")
-        
+
+        # RefreshWorker has no per-item progress -- a large/nested Box folder
+        # structure can sit on that one static line for a long time with
+        # nothing changing, which looks identical to the app having hung.
+        # Tick a heartbeat until _on_refresh_complete takes over (metadata
+        # creation, the next phase, already has its own live per-step progress).
+        self._start_progress_heartbeat(token, "🔄 Refreshing data from Box (scanning folders recursively)")
+
         # Create worker
         worker = RefreshWorker(None, self.config_path, self.record_file)
         worker.finished.connect(self._on_refresh_complete)
-        
+
         # Run in background thread
         thread = Thread(target=worker.run)
         thread.daemon = True
         thread.start()
+
+    def _start_progress_heartbeat(self, token, label):
+        """Tick the status bar once a second with elapsed time while a
+        long-running step with no progress signal of its own is in flight,
+        so it doesn't read as a hang. Call _stop_progress_heartbeat() the
+        moment that step finishes or hands off to a phase with its own
+        progress updates.
+        """
+        self._stop_progress_heartbeat()
+        self._heartbeat_elapsed_seconds = 0
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(1000)
+        self._heartbeat_timer.timeout.connect(lambda: self._on_progress_heartbeat_tick(token, label))
+        self._heartbeat_timer.start()
+
+    def _on_progress_heartbeat_tick(self, token, label):
+        self._heartbeat_elapsed_seconds += 1
+        dots = "." * ((self._heartbeat_elapsed_seconds % 3) + 1)
+        self._set_status_if_current(token, f"{label}{dots}  ({self._heartbeat_elapsed_seconds}s)")
+
+    def _stop_progress_heartbeat(self):
+        if getattr(self, "_heartbeat_timer", None) is not None:
+            self._heartbeat_timer.stop()
+            self._heartbeat_timer = None
     
     def _show_dotnet_missing_dialog(self):
         """Prompt the user to install the .NET runtime required by BoxAutomate.exe."""
@@ -1494,6 +1743,7 @@ class MainWindow(QMainWindow):
 
     def _on_refresh_complete(self, result):
         """Handle refresh completion (runs on main thread)"""
+        self._stop_progress_heartbeat()
         success, data, error = result
 
         try:
@@ -1806,7 +2056,7 @@ class MainWindow(QMainWindow):
         if reset_page:
             self.current_page = 0
             self._display_current_page()
-            self._update_pagination_buttons()
+            self._update_sidebar_buttons()
 
     def _build_installed_tool_list(self):
         """Scan Software_Downloaded and return {software_name: version} for every folder,
@@ -2978,7 +3228,7 @@ class MainWindow(QMainWindow):
                 remaining_card.show()
                 matched += 1
                 col += 1
-                if col >= 4:
+                if col >= self._current_card_columns():
                     col = 0
                     row += 1
             else:
