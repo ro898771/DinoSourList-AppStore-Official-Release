@@ -76,13 +76,14 @@ class SoftwareListRow(QFrame):
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
                  icon_path=None, folder_name=None, folder_id=None, readme_available=True,
-                 sequence_number=None):
+                 sequence_number=None, exec_valid=True):
         super().__init__()
         self.folder_path = folder_path
         self.folder_name = folder_name or folder_path.name
         self.folder_id = folder_id or ""
         self.versions_data = []
         self.is_latest = is_latest
+        self.exec_valid = exec_valid
 
         parsed = parse_software_folder_name(folder_path.name)
         self.display_name = format_software_name(parsed)
@@ -93,7 +94,10 @@ class SoftwareListRow(QFrame):
         self.setFixedHeight(LIST_ROW_HEIGHT)
         self.setStyleSheet(_ROW_FRAME_STYLE)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("Click to Launch")
+        self.setToolTip(
+            "Click to Launch" if exec_valid
+            else "⚠ Unrecognized execution format — click for details"
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 4, 12, 4)
@@ -108,7 +112,10 @@ class SoftwareListRow(QFrame):
         seq_label.setStyleSheet(_ROW_SEQ_STYLE)
         layout.addWidget(seq_label, 0, Qt.AlignVCenter)
 
-        info_label = QLabel(f"<b>{self.display_name}</b>, {self.author_name} &nbsp; <span style='color:#868e96;'>{version}</span>")
+        name_html = f"<b>{self.display_name}</b>, {self.author_name} &nbsp; <span style='color:#868e96;'>{version}</span>"
+        if not exec_valid:
+            name_html = f"⚠️ {name_html}"
+        info_label = QLabel(name_html)
         info_label.setTextFormat(Qt.RichText)
         info_label.setFixedHeight(28)
         info_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)

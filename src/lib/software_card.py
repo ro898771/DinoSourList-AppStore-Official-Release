@@ -5,9 +5,12 @@ SoftwareCard - Modern Bootstrap-style card for displaying software
 import json
 import re
 from pathlib import Path
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QComboBox, QPushButton
+from PySide6.QtWidgets import (
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QComboBox, QPushButton,
+    QGraphicsColorizeEffect,
+)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QIcon
+from PySide6.QtGui import QPixmap, QIcon, QColor
 
 from .clickable_label import ClickableLabel
 from .folder_parser import parse_software_folder_name, format_software_name, format_version, format_author, get_author_raw
@@ -29,11 +32,13 @@ class SoftwareCard(QFrame):
     card_refresh_clicked = Signal(str, str)  # Emits (folder_name, folder_id)
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
-                 icon_path=None, folder_name=None, folder_id=None, readme_available=True):
+                 icon_path=None, folder_name=None, folder_id=None, readme_available=True,
+                 exec_valid=True):
         super().__init__()
         self.folder_path = folder_path
         self.lnk_path = lnk_path
         self.icon_path = Path(icon_path) if icon_path else None
+        self.exec_valid = exec_valid
         self.record_path = Path(record_path) if record_path else Path("config-record/record.json")
         self.folder_name = folder_name or folder_path.name
         self.folder_id = folder_id or ""
@@ -160,6 +165,16 @@ class SoftwareCard(QFrame):
         else:
             icon_label.setText("📦")
             icon_label.setStyleSheet(CARD_ICON_FALLBACK_STYLE)
+
+        if not self.exec_valid:
+            # Flow.txt's [Execution] target doesn't exist in the downloaded
+            # folder -- grey the icon out so the card still shows (so Delete/
+            # re-download stay reachable) but visually flags it as broken.
+            grey_effect = QGraphicsColorizeEffect(icon_label)
+            grey_effect.setColor(QColor("#9e9e9e"))
+            grey_effect.setStrength(1.0)
+            icon_label.setGraphicsEffect(grey_effect)
+            icon_label.setToolTip("⚠ Unrecognized execution format — click for details")
 
         main_layout.addWidget(icon_label, 0, Qt.AlignHCenter)
         

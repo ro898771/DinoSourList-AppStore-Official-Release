@@ -8,6 +8,7 @@
 - Filter added OR operation for Developer Name / Tool Name
 - FaceLift UI LayOut
 - Add README UI on Software Dashboard
+- Add Format Tracker for Flow.txt configuration files
 
 ## 💡 What is Dinosaur-List? 
 

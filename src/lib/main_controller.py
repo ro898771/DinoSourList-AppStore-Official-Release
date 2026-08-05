@@ -1432,6 +1432,7 @@ class MainWindow(QMainWindow):
                 folder_name=app_store_folder_name,
                 folder_id=dash_folder_id,
                 readme_available=self._dashboard_readme_exists(folder),
+                exec_valid=bool(software_data.get('exec_path')),
                 **extra_kwargs,
             )
             card.clicked.connect(self.launch_software)
@@ -2223,6 +2224,8 @@ class MainWindow(QMainWindow):
         Args:
             reset_page: If True, resets to page 0 and displays. If False, only reloads data.
         """
+        from .folder_parser import parse_software_folder_name, get_author_raw
+
         self.all_software_data = []
 
         if not self.software_path.exists():
@@ -2239,23 +2242,26 @@ class MainWindow(QMainWindow):
         for folder in sorted(folders):
             # Read Flow.txt to get icon and execution file
             icon_path, exec_path = self._get_flow_info(folder)
+            author = get_author_raw(parse_software_folder_name(folder.name))
 
-            # Show card only if Flow.txt defines an execution target
+            # Still added even without a resolvable execution target -- a
+            # successfully-downloaded app with a bad/mismatched Flow.txt would
+            # otherwise get no card at all, leaving the user unable to Delete
+            # or re-download it from the Dashboard. _display_dashboard_page
+            # greys out the icon for these, and launch_software() explains
+            # why when clicked instead of trying to launch.
+            is_latest = count != 0  # TODO: replace with real API check
+
+            self.all_software_data.append({
+                'name': folder.name,
+                'exec_path': exec_path,   # resolved from Flow.txt [Execution]; None if invalid
+                'icon_path': icon_path,   # resolved from Flow.txt [Icon]
+                'folder': folder,
+                'is_latest': is_latest,
+                'author': author,
+            })
             if exec_path:
-                is_latest = count != 0  # TODO: replace with real API check
-
-                self.all_software_data.append({
-                    'name': folder.name,
-                    'exec_path': exec_path,   # resolved from Flow.txt [Execution]
-                    'icon_path': icon_path,   # resolved from Flow.txt [Icon]
-                    'folder': folder,
-                    'is_latest': is_latest
-                })
                 count += 1
-
-        if count == 0:
-            self.status_label.setText("⚠️ No software with a valid Flow.txt found in Software_Downloaded")
-            return
 
         if reset_page:
             self.current_page = 0
@@ -3116,11 +3122,26 @@ class MainWindow(QMainWindow):
             self._display_current_page()
             self._end_busy_status()
 
+            # [Installation] Auto= in Flow.txt tells us whether this software
+            # still needs the user to run an installer, or is ready to use
+            # as-is (e.g. a portable .exe/.cmd) once it's pulled from Box.
+            auto_install, _ = self.download_worker._get_installation_info()
+            next_step = (
+                "Please proceed with the installation."
+                if auto_install else
+                "No installation required — please enjoy the tool."
+            )
+
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Installation Complete")
             msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(f"{message}\n\nThe software has been installed to Software_Downloaded folder.\n\n"
-                           f"Dashboard has been refreshed automatically.")
+            msg_box.setText(
+                f"Successfully pulled {self.download_worker.software_name} "
+                f"{self.download_worker.version} from Box Link to Local.\n\n"
+                f"The software has been saved to the Software_Downloaded folder.\n\n"
+                f"{next_step}\n\n"
+                f"Dashboard has been refreshed automatically."
+            )
             msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
             msg_box.exec()
         else:
@@ -3258,12 +3279,19 @@ class MainWindow(QMainWindow):
             reason = "exec_path is None" if not exec_path else f"file not found: {exec_path}"
             print(f"[LAUNCH] ABORTED             : {reason}")
             self._report_log(f"Launch aborted for '{folder_path}': {reason}")
-            QMessageBox.warning(
-                self,
-                "Launch Error",
-                f"Execution file not found for {Path(folder_path).name}.\n"
-                f"Check Flow.txt [Execution] file= in the App_Store folder."
+            author = matched_sw.get('author') if matched_sw else None
+            contact = f" ({author})" if author and author != "Unknown" else ""
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Unrecognized Application Format")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setText(
+                f"⚠️ Unstandardized format found in the Grab Box for "
+                f"'{Path(folder_path).name}'.\n\n"
+                f"Please contact the developer{contact} about this issue, "
+                f"or try deleting and re-downloading the application."
             )
+            msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
+            msg_box.exec()
         print(f"{'='*60}\n")
     
     def delete_software(self, folder_path):
