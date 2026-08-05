@@ -3127,7 +3127,7 @@ class MainWindow(QMainWindow):
             # as-is (e.g. a portable .exe/.cmd) once it's pulled from Box.
             auto_install, _ = self.download_worker._get_installation_info()
             next_step = (
-                "Please proceed with the installation."
+                "The installer already ran automatically as part of this download."
                 if auto_install else
                 "No installation required — please enjoy the tool."
             )
