@@ -9,6 +9,7 @@
 - FaceLift UI LayOut
 - Add README UI on Software Dashboard
 - Add Format Tracker for Flow.txt configuration files
+- Add Delete Flow on helping dotnet developer, to perform uninstallation for registry remover
 
 ## 💡 What is Dinosaur-List? 
 

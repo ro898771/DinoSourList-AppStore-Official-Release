@@ -641,6 +641,11 @@ class DownloadInstallWorker(QObject):
 class DeleteWorker(QObject):
     """Delete a software folder in a background thread.
 
+    After the Software_Downloaded folder is confirmed gone, also checks the
+    App_Store Flow.txt for a [Delete] section -- if Auto=True, runs
+    `winget uninstall <idname>` so a real Windows install (MSI/EXE via
+    winget) gets cleaned up too, not just the local folder copy.
+
     Signals
     -------
     finished(success: bool, message: str)
@@ -655,6 +660,80 @@ class DeleteWorker(QObject):
     def __init__(self, folder_path: str):
         super().__init__()
         self.folder_path = Path(folder_path)
+
+    def _get_delete_info(self):
+        """Read [Delete] section from App_Store Flow.txt.
+
+        Returns:
+            (auto: bool, idname: str or None)
+            auto is True only when Auto=True is explicitly set.
+        """
+        from .folder_parser import parse_software_folder_name, format_software_name, get_author_raw
+
+        parsed = parse_software_folder_name(self.folder_path.name)
+        sw_name = format_software_name(parsed)
+        author = get_author_raw(parsed)
+
+        flow_txt = self.folder_path.parent.parent / "App_Store" / f"{sw_name}-{author}" / "Flow.txt"
+
+        auto = False
+        idname = None
+
+        if not flow_txt.exists():
+            return auto, idname
+
+        try:
+            current_section = None
+            with open(flow_txt, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('[') and line.endswith(']'):
+                        current_section = line[1:-1].lower()
+                        continue
+                    if current_section == 'delete' and '=' in line:
+                        key, _, value = line.partition('=')
+                        key = key.strip().lower()
+                        value = value.strip()
+                        if key == 'auto':
+                            auto = value.lower() == 'true'
+                        elif key == 'idname':
+                            idname = value
+        except Exception as e:
+            print(f"[DELETE] Could not parse Flow.txt [Delete] for {self.folder_path.name}: {e}")
+
+        return auto, idname
+
+    def _run_winget_uninstall(self, idname):
+        """Uninstall *idname* via winget, blocking until it finishes.
+
+        Best-effort -- the Software_Downloaded folder is already gone by the
+        time this runs, so a missing/failed winget uninstall is logged and
+        reported via progress, but never turns the overall delete into a
+        failure.
+        """
+        self.progress.emit(f"Uninstalling '{idname}' via winget…")
+        try:
+            proc = subprocess.run(
+                ["winget", "uninstall", idname, "--silent", "--accept-source-agreements"],
+                capture_output=True, text=True, timeout=180,
+            )
+            if proc.returncode == 0:
+                self.progress.emit(f"  ✓ winget uninstall '{idname}' completed")
+                print(f"[DELETE] winget uninstall '{idname}' succeeded")
+            else:
+                print(f"[DELETE] winget uninstall '{idname}' exited {proc.returncode}: {proc.stderr.strip()}")
+                self.progress.emit(f"  ⚠ winget uninstall '{idname}' exited with code {proc.returncode}")
+        except FileNotFoundError:
+            print("[DELETE] winget not found on this system — skipped uninstall")
+            self.progress.emit("  ⚠ winget not found — skipped uninstall")
+        except subprocess.TimeoutExpired:
+            print(f"[DELETE] winget uninstall '{idname}' timed out")
+            self.progress.emit(f"  ⚠ winget uninstall '{idname}' timed out")
+        except Exception as e:
+            print(f"[DELETE] winget uninstall failed: {e}")
+            self.progress.emit(f"  ⚠ winget uninstall failed: {e}")
 
     # ------------------------------------------------------------------
     def run(self):
@@ -702,6 +781,14 @@ class DeleteWorker(QObject):
                 raise OSError(
                     f"Folder still exists after forced deletion — files may be in use by another process."
                 )
+
+            # Software_Downloaded copy is gone -- now check whether this app
+            # also needs a real Windows uninstall via winget (see [Delete] in
+            # App_Store Flow.txt). Folder deletion has already succeeded at
+            # this point regardless of what happens below.
+            auto_uninstall, idname = self._get_delete_info()
+            if auto_uninstall and idname:
+                self._run_winget_uninstall(idname)
 
             self.finished.emit(True, folder.name)
 
