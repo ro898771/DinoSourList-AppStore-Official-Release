@@ -9,16 +9,59 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QComboBox, QPushButton,
     QGraphicsColorizeEffect,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QIcon, QColor
+from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtGui import QPixmap, QIcon, QColor, QPainter, QPen
 
 from .clickable_label import ClickableLabel
+from .bookmark_button import BookmarkButton
 from .folder_parser import parse_software_folder_name, format_software_name, format_version, format_author, get_author_raw
 from .styles import (
     CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE,
     CARD_INFO_STYLE, VERSION_LATEST_CONFIG, VERSION_OUTDATED_CONFIG,
     get_version_label_style, COMBOBOX_STYLE, DISABLED_ACTION_LABEL_STYLE
 )
+
+
+class _DeleteCircleButton(ClickableLabel):
+    """A small hand-drawn ✕, no background/border -- sized to match the
+    refresh/favourite circular badges' footprint (for row spacing) but with
+    no circle "cover" and a smaller mark. Painted rather than a text glyph,
+    since that particular Unicode character turned out not to render at all
+    in the real app earlier in this session.
+    """
+
+    def __init__(self, size=30, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Delete")
+        self._hovered = False
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setStyleSheet("QLabel { background-color: transparent; border: none; }")
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        pen = QPen(QColor("#dc3545") if self._hovered else QColor("#9ca3af"))
+        pen.setWidthF(max(1.4, self.width() * 0.06))
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        m = self.width() * 0.4
+        w, h = self.width(), self.height()
+        painter.drawLine(QPointF(m, m), QPointF(w - m, h - m))
+        painter.drawLine(QPointF(w - m, m), QPointF(m, h - m))
+        painter.end()
 
 
 class SoftwareCard(QFrame):
@@ -30,10 +73,11 @@ class SoftwareCard(QFrame):
     update_clicked = Signal(str, str, str)  # Signal for update button click (software_name, version, file_id)
     delete_clicked = Signal(str)   # Signal for delete button click (folder_path)
     card_refresh_clicked = Signal(str, str)  # Emits (folder_name, folder_id)
+    favourite_toggled = Signal(str, bool)  # Emits (folder_name, new_is_favourite)
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
                  icon_path=None, folder_name=None, folder_id=None, readme_available=True,
-                 exec_valid=True):
+                 exec_valid=True, is_favourite=False):
         super().__init__()
         self.folder_path = folder_path
         self.lnk_path = lnk_path
@@ -42,6 +86,7 @@ class SoftwareCard(QFrame):
         self.record_path = Path(record_path) if record_path else Path("config-record/record.json")
         self.folder_name = folder_name or folder_path.name
         self.folder_id = folder_id or ""
+        self.is_favourite = is_favourite
         self.versions_data = []  # List of (version, file_id) tuples
 
         # Human-readable name/author used by the filter box
@@ -61,7 +106,8 @@ class SoftwareCard(QFrame):
         main_layout.setSpacing(5)
         main_layout.setContentsMargins(10, 15, 10, 10)
 
-        # Top row: left column (ReadMe + Delete) | stretch | right column (⟳ + >)
+        # Top row: left column (ReadMe + Path) | stretch | right side
+        # (⟳ refresh, ★ favourite, ✕ delete -- one row of 3 circles)
         top_row = QHBoxLayout()
         top_row.setSpacing(5)
 
@@ -87,27 +133,32 @@ class SoftwareCard(QFrame):
             readme_button.setEnabled(False)
         left_col.addWidget(readme_button)
 
-        delete_button = ClickableLabel("Delete")
-        delete_button.setAlignment(Qt.AlignCenter)
-        delete_button.setCursor(Qt.PointingHandCursor)
-        delete_button.setFixedHeight(28)
-        delete_button.setFixedWidth(70)
-        delete_button.setStyleSheet(get_version_label_style(
-            "#dc3545",      # Red text
-            "#f8d7da",      # Light red background
-            "#f5c2c7",      # Darker red on hover
-            "#a71d2a"       # Darker red text on hover
+        self.path_button = ClickableLabel("Path")
+        self.path_button.setAlignment(Qt.AlignCenter)
+        self.path_button.setCursor(Qt.PointingHandCursor)
+        self.path_button.setFixedHeight(28)
+        self.path_button.setFixedWidth(70)
+        self.path_button.setToolTip("Directory Path")
+        self.path_button.setStyleSheet(get_version_label_style(
+            "#6f42c1",      # Purple text -- same as Details
+            "#e2d9f3",      # Light warm purple background
+            "#d3c5e8",      # Darker purple on hover
+            "#5a32a3"       # Darker purple text on hover
         ))
-        delete_button.clicked.connect(lambda: self.delete_clicked.emit(str(self.folder_path)))
-        left_col.addWidget(delete_button)
+        self.path_button.clicked.connect(lambda: self.folder_clicked.emit(str(self.folder_path)))
+        left_col.addWidget(self.path_button)
 
         top_row.addLayout(left_col)
         top_row.addStretch()
 
-        # Right column: ⟳ (refresh) on top, > (folder) on bottom
-        right_col = QVBoxLayout()
-        right_col.setSpacing(4)
-        right_col.setAlignment(Qt.AlignTop)
+        # Right side: ⟳ (refresh), ★ (favourite), ✕ (delete) in one row
+        right_row = QHBoxLayout()
+        right_row.setSpacing(6)
+        right_row.setAlignment(Qt.AlignTop)
+
+        self.favourite_btn = BookmarkButton(is_favourite=self.is_favourite, size=30)
+        self.favourite_btn.clicked.connect(self._on_favourite_clicked)
+        right_row.addWidget(self.favourite_btn)
 
         self.refresh_card_btn = ClickableLabel("⟳")
         self.refresh_card_btn.setAlignment(Qt.AlignCenter)
@@ -130,23 +181,13 @@ class SoftwareCard(QFrame):
             }
         """)
         self.refresh_card_btn.clicked.connect(self._on_card_refresh_clicked)
-        right_col.addWidget(self.refresh_card_btn)
+        right_row.addWidget(self.refresh_card_btn)
 
-        self.folder_button = ClickableLabel(">")
-        self.folder_button.setAlignment(Qt.AlignCenter)
-        self.folder_button.setCursor(Qt.PointingHandCursor)
-        self.folder_button.setFixedSize(30, 30)
-        self.folder_button.setToolTip("Directory Path")
-        self.folder_button.setStyleSheet(get_version_label_style(
-            "#A8A8A8",      # Grey text
-            "#ffffff",      # White background
-            "#d1d5db",      # Light grey border (hover background)
-            "#6b7280"       # Darker grey text on hover
-        ))
-        self.folder_button.clicked.connect(lambda: self.folder_clicked.emit(str(self.folder_path)))
-        right_col.addWidget(self.folder_button)
+        self.delete_btn = _DeleteCircleButton(size=30)
+        self.delete_btn.clicked.connect(lambda: self.delete_clicked.emit(str(self.folder_path)))
+        right_row.addWidget(self.delete_btn)
 
-        top_row.addLayout(right_col)
+        top_row.addLayout(right_row)
         main_layout.addLayout(top_row)
 
         # Icon — stored as instance attribute so it can be updated after refresh
@@ -186,7 +227,7 @@ class SoftwareCard(QFrame):
         
         # Add controls (ReadMe, ComboBox, Status)
         self._setup_controls(main_layout)
-    
+
     def _load_icon(self, folder_path):
         """Load the card icon from the App_Store folder.
 
@@ -525,6 +566,11 @@ class SoftwareCard(QFrame):
     def _on_card_refresh_clicked(self):
         """Handle per-card refresh button click."""
         self.card_refresh_clicked.emit(self.folder_name, self.folder_id)
+
+    def _on_favourite_clicked(self):
+        """Flip the bookmark locally for instant feedback, then notify the controller."""
+        self.is_favourite = self.favourite_btn.toggle()
+        self.favourite_toggled.emit(self.folder_name, self.is_favourite)
 
     def set_refreshing(self, is_refreshing: bool):
         """Toggle visual state of the refresh button while syncing."""

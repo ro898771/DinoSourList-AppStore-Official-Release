@@ -1,15 +1,8 @@
 ## 🎉 Official Released {{APP_VERSION}}
 
-- BugFix on Delete Feature to prevent Inifite Loop
-- Modified Feature on download process
-- Smoothen then tab navigation process
-- Resolved Warning for Path Directory
-- Log API Fixing
-- Filter added OR operation for Developer Name / Tool Name
-- FaceLift UI LayOut
-- Add README UI on Software Dashboard
-- Add Format Tracker for Flow.txt configuration files
-- Add Delete Flow on helping dotnet developer, to perform uninstallation for registry remover
+- Add Favourite Tab
+- Add Setting for Refresh to speed up the refresh processing time
+
 
 ## 💡 What is Dinosaur-List? 
 

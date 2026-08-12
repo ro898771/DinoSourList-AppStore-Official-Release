@@ -15,10 +15,14 @@ class AppStoreDownloadWorker(QObject):
     finished = Signal(object)
     progress = Signal(str)
 
-    def __init__(self, record_data, app_store_path):
+    def __init__(self, record_data, app_store_path, skip_readme_and_guide=False):
         super().__init__()
         self.record_data = record_data
         self.app_store_path = Path(app_store_path)
+        # True -> Refresh Setting's "icon + Flow.txt + metadata only" mode:
+        # never queue a guide or readme, and never fall back to a bare
+        # README.md either (see the Pass 3 fallback below).
+        self.skip_readme_and_guide = skip_readme_and_guide
 
     def _download_file(self, task):
         """Download a single file from Box. Used by ThreadPoolExecutor."""
@@ -241,6 +245,10 @@ class AppStoreDownloadWorker(QObject):
                 icon_filename, guide_filename, guide_changed, readme_filename = \
                     self._parse_flow_txt(flow_path)
 
+                if self.skip_readme_and_guide:
+                    guide_filename = None
+                    readme_filename = None
+
                 # Queue icon — always re-download
                 if icon_filename:
                     key = icon_filename.lower()
@@ -281,10 +289,11 @@ class AppStoreDownloadWorker(QObject):
                         self.progress.emit(
                             f"  ⚠ {readme_filename} not found in Box for {parent_name}"
                         )
-                else:
+                elif not self.skip_readme_and_guide:
                     # Safety fallback: if Flow.txt has no [ReadMe] section but
                     # README.md exists in Box, download it automatically so the
-                    # AI assistant can index it.
+                    # AI assistant can index it. Suppressed in skip_readme_and_guide
+                    # mode -- that mode means "icon + Flow.txt + metadata only".
                     if 'readme.md' in files_by_name:
                         _, file_id = files_by_name['readme.md']
                         asset_tasks.append((file_id, str(folder_path), 'README.md', parent_name))

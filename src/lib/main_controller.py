@@ -36,17 +36,22 @@ from .store_card import StoreCard
 from .list_row import SoftwareListRow, StoreListRow, LIST_ROW_WIDTH
 from .boxlink_api import BoxLinkAPI, is_dotnet_missing_error, DOTNET_DOWNLOAD_URL
 from .app_controller import AppStoreDownloadWorker, SingleCardDownloadWorker
-from .workers import WorkerSignals, RefreshWorker, SingleCardRefreshWorker, CheckWorker, DownloadInstallWorker, DeleteWorker
+from .workers import (
+    WorkerSignals, RefreshWorker, SingleCardRefreshWorker, CheckWorker,
+    DownloadInstallWorker, DeleteWorker, TargetedRefreshWorker, NewAppsScanWorker,
+)
 from .readme_viewer import ReadmeViewer
+from .settings_dialog import SettingsDialog
 from .styles import (
     MAIN_WINDOW_STYLE, TITLE_STYLE, REFRESH_BUTTON_STYLE,
     STATUS_LABEL_STYLE, MESSAGE_BOX_STYLE, EXIT_DIALOG_STYLE,
     SIDEBAR_STYLE, SIDEBAR_TITLE_STYLE, SIDEBAR_ITEM_STYLE, SIDEBAR_ITEM_ACTIVE_STYLE,
     SIDEBAR_ITEM_STYLE_COLLAPSED, SIDEBAR_ITEM_ACTIVE_STYLE_COLLAPSED,
-    SIDEBAR_INFO_STYLE, SIDEBAR_LOGOUT_STYLE,
+    SIDEBAR_INFO_STYLE, SIDEBAR_LOGOUT_STYLE, SIDEBAR_SETTINGS_STYLE,
     SCROLL_BAR_STYLE, COMBOBOX_STYLE, get_version_label_style
 )
 from .clickable_label import ClickableLabel
+from .collapse_toggle import CollapseToggleButton
 
 
 class _LLMWorker(QObject):
@@ -130,7 +135,7 @@ class MainWindow(QMainWindow):
         
         # Pagination settings
         self.current_page = 0
-        self.total_pages = 4
+        self.total_pages = 5
         self.cards_per_page = 8  # 2 rows x 4 columns
         self.all_software_data = []  # Store all software data
         self.card_references = {}  # Store card references by folder path
@@ -143,10 +148,29 @@ class MainWindow(QMainWindow):
         self._ai_dialog = None              # AI Assistant dialog instance (kept non-modal)
         self._list_view_enabled = False     # Dashboard/Store card grid: False = icon grid, True = single-column list
 
+        # Refresh Setting (Settings > Refresh Setting): which of the 4 modes
+        # the Refresh button runs. Loaded before the button is created below
+        # so its initial "Refresh(N)" label is correct from the first frame.
+        self._refresh_setting_path = Path(__file__).parent.parent.parent / "config-record" / "refresh_setting.json"
+        self._load_refresh_setting()
+
+        # Favourites: App_Store-style folder names ("<Name>-<Author>") the
+        # user has starred, shared between Dashboard and Store since both
+        # cards carry that same folder_name. Loaded before any page renders
+        # so the very first Dashboard/Store build already shows filled stars.
+        self._favourites_path = Path(__file__).parent.parent.parent / "config-record" / "favourites.json"
+        self._load_favourites()
+
+        # Favourites page: per-section expand/collapse state (in-memory only,
+        # not persisted -- resets to expanded on app restart). Keyed by
+        # "installed"/"store".
+        self._favourites_section_expanded = {"installed": True, "store": True}
+
         # Page names
         self.page_names = [
             "Dashboard",
             "Store",
+            "Favourites",
             "Useful Links",
             "News"
         ]
@@ -269,8 +293,8 @@ class MainWindow(QMainWindow):
 
         # Refresh button -- aligned above the last (4th) card of the grid below,
         # not just floated to the window's edge.
-        self.refresh_btn = QPushButton("⟳  Refresh")
-        self.refresh_btn.setMaximumWidth(120)
+        self.refresh_btn = QPushButton(self._refresh_button_label())
+        self.refresh_btn.setMaximumWidth(140)
         self.refresh_btn.setStyleSheet(REFRESH_BUTTON_STYLE)
         self.refresh_btn.clicked.connect(self.refresh_data)
         controls_row.addWidget(self.refresh_btn)
@@ -950,8 +974,9 @@ class MainWindow(QMainWindow):
         nav_items = [
             (0, "🚀", "Local Dashboard"),
             (1, "🏪", "Software Store"),
-            (2, "🔗", "Useful Links"),
-            (3, "📰", "News & Updates"),
+            (2, "⭐", "Favourites"),
+            (3, "🔗", "Useful Links"),
+            (4, "📰", "News & Updates"),
         ]
 
         self.sidebar_buttons = []
@@ -1007,6 +1032,15 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.sidebar_store_count_label)
 
         sidebar_layout.addSpacing(8)
+
+        self.sidebar_settings_btn = QPushButton("⚙️  Setting")
+        self.sidebar_settings_btn.setCursor(Qt.PointingHandCursor)
+        self.sidebar_settings_btn.setFixedHeight(44)
+        self.sidebar_settings_btn.setStyleSheet(SIDEBAR_SETTINGS_STYLE)
+        self.sidebar_settings_btn.setToolTip("App settings")
+        self.sidebar_settings_btn.clicked.connect(self._open_settings_dialog)
+        sidebar_layout.addWidget(self.sidebar_settings_btn)
+        sidebar_layout.addSpacing(6)
 
         self.sidebar_logout_btn = QPushButton("🚪  Exit")
         self.sidebar_logout_btn.setCursor(Qt.PointingHandCursor)
@@ -1120,6 +1154,8 @@ class MainWindow(QMainWindow):
             self.sidebar_store_count_label.setVisible(False)
             self.sidebar_logout_btn.setText("🚪")
             self.sidebar_logout_btn.setToolTip("Exit")
+            self.sidebar_settings_btn.setText("⚙️")
+            self.sidebar_settings_btn.setToolTip("Settings")
         self._update_sidebar_buttons()
 
         start_width = self.sidebar_widget.width()
@@ -1162,6 +1198,8 @@ class MainWindow(QMainWindow):
                 self.sidebar_store_count_label.setVisible(True)
                 self.sidebar_logout_btn.setText("🚪  Exit")
                 self.sidebar_logout_btn.setToolTip("Exit the app")
+                self.sidebar_settings_btn.setText("⚙️  Setting")
+                self.sidebar_settings_btn.setToolTip("App settings")
                 self._update_sidebar_buttons()
             # Reflow the card grid to the new column count only once the
             # window has actually reached its final size (both directions) --
@@ -1216,8 +1254,9 @@ class MainWindow(QMainWindow):
         titles = {
             0: "🚀 Local Dashboard",
             1: "🏪 Software Store",
-            2: "🔗 Useful Links",
-            3: "📰 News & Updates"
+            2: "⭐ Favourites",
+            3: "🔗 Useful Links",
+            4: "📰 News & Updates"
         }
         self.title_label.setText(titles.get(self.current_page, "🚀 Software Dashboard"))
     
@@ -1360,6 +1399,15 @@ class MainWindow(QMainWindow):
         for col in range(4):
             self.cards_layout.setColumnStretch(col, 0)
 
+        # Reset row stretches -- Favourites (few rows) sets a trailing
+        # stretch row so leftover vertical space collects below its content
+        # instead of QGridLayout's default of spreading it evenly across
+        # every row (which otherwise inflates the gaps between section
+        # headers and their card rows). Must be cleared on every other page
+        # too, or a stretch row set on a past Favourites visit lingers.
+        for r in range(60):
+            self.cards_layout.setRowStretch(r, 0)
+
         # Display different content based on current page
         if self.current_page == 0:
             self.cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -1368,11 +1416,16 @@ class MainWindow(QMainWindow):
             self.cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             self._display_store_page()
         elif self.current_page == 2:
+            # Favourites page — same card grid as Dashboard/Store, not a
+            # full-width content page, so no column stretch.
+            self.cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            self._display_favourites_page()
+        elif self.current_page == 3:
             # Useful Links page — let the layout fill full horizontal space
             self.cards_layout.setAlignment(Qt.AlignTop)
             self.cards_layout.setColumnStretch(0, 1)
             self._display_useful_links_page()
-        elif self.current_page == 3:
+        elif self.current_page == 4:
             # News page — let the layout fill full horizontal space
             self.cards_layout.setAlignment(Qt.AlignTop)
             self.cards_layout.setColumnStretch(0, 1)
@@ -1433,6 +1486,7 @@ class MainWindow(QMainWindow):
                 folder_id=dash_folder_id,
                 readme_available=self._dashboard_readme_exists(folder),
                 exec_valid=bool(software_data.get('exec_path')),
+                is_favourite=self._is_favourite(app_store_folder_name),
                 **extra_kwargs,
             )
             card.clicked.connect(self.launch_software)
@@ -1442,6 +1496,7 @@ class MainWindow(QMainWindow):
             card.update_clicked.connect(self._on_update_download)
             card.delete_clicked.connect(self.delete_software)
             card.card_refresh_clicked.connect(self._on_dashboard_card_refresh_clicked)
+            card.favourite_toggled.connect(self._on_favourite_toggled)
             self.cards_layout.addWidget(card, row, col)
 
             # Store references
@@ -1529,6 +1584,7 @@ class MainWindow(QMainWindow):
                 folder_id=software.get('folder_id', ''),
                 guide_available=software.get('guide_available', True),
                 readme_available=software.get('readme_available', True),
+                is_favourite=self._is_favourite(software.get('folder_name', software['name'])),
                 **extra_kwargs,
             )
 
@@ -1537,6 +1593,7 @@ class MainWindow(QMainWindow):
             card.guide_clicked.connect(self._on_store_guide_clicked)
             card.readme_clicked.connect(self._on_store_readme_clicked)
             card.card_refresh_clicked.connect(self._on_card_refresh_clicked)
+            card.favourite_toggled.connect(self._on_favourite_toggled)
 
             self.store_card_references[software.get('folder_name', software['name'])] = card
 
@@ -1555,6 +1612,218 @@ class MainWindow(QMainWindow):
             total_software = len(store_data)
             self.status_label.setText(f"🏪 {self.page_names[self.current_page]} - {total_software} software available")
     
+    def _build_favourites_section_header(self, key, title):
+        """Build a collapsible section header row for the Favourites page:
+        title on the left, a "Click to hide/show" hint + chevron on the
+        right. *key* is "installed" or "store" -- looked up/stored in
+        self._favourites_section_expanded. Returns (header_widget, expanded).
+        """
+        expanded = self._favourites_section_expanded.get(key, True)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 4, 0, 4)
+        header_layout.setSpacing(8)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            "QLabel { font-size: 18px; font-weight: 800; color: #3730a3; }"
+        )
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+
+        hint_label = ClickableLabel("Click to hide" if expanded else "Click to show")
+        hint_label.setStyleSheet(
+            "QLabel { font-size: 13px; color: #9ca3af; font-weight: 600; }"
+        )
+        hint_label.setCursor(Qt.PointingHandCursor)
+        header_layout.addWidget(hint_label)
+
+        toggle_btn = CollapseToggleButton(expanded=expanded, size=28)
+        header_layout.addWidget(toggle_btn)
+
+        def _on_toggle():
+            self._favourites_section_expanded[key] = not self._favourites_section_expanded.get(key, True)
+            self._display_current_page()
+
+        hint_label.clicked.connect(_on_toggle)
+        toggle_btn.clicked.connect(_on_toggle)
+
+        return header, expanded
+
+    def _display_favourites_page(self):
+        """Favourites page: two sections -- "Installed" (SoftwareCard, same
+        actions as Dashboard) and "Available in Store" (StoreCard, same
+        actions as Store) -- so a favourited app that's also installed only
+        shows up once. Reuses Dashboard/Store's own reference dicts and
+        signal wiring so per-card refresh/delete/download etc. all keep
+        working unchanged from this page too.
+        """
+        from .folder_parser import parse_software_folder_name, format_software_name, get_author_raw
+
+        if not self._favourites:
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+            container_layout.setSpacing(20)
+            container_layout.setContentsMargins(50, 20, 50, 50)
+
+            star_label = QLabel("⭐ Favourites")
+            star_label.setStyleSheet("""
+                QLabel {
+                    font-size: 48px;
+                    font-weight: bold;
+                    color: #d97706;
+                    padding: 80px 100px 20px 100px;
+                }
+            """)
+            star_label.setAlignment(Qt.AlignCenter)
+            container_layout.addWidget(star_label)
+
+            info_label = QLabel("No favourites yet — click the ☆ on any app to add it here.")
+            info_label.setStyleSheet("""
+                QLabel {
+                    font-size: 18px;
+                    color: #6c757d;
+                    padding: 20px;
+                }
+            """)
+            info_label.setAlignment(Qt.AlignCenter)
+            container_layout.addWidget(info_label)
+
+            container_layout.addStretch()
+            self.cards_layout.addWidget(container, 0, 0, 4, 4)
+            self.status_label.setText("⭐ Favourites - No favourites yet")
+            return
+
+        # Installed favourites: same App_Store-name derivation Dashboard uses.
+        installed_names = set()
+        installed_entries = []  # (software_data, app_store_folder_name, dash_folder_id)
+        for software_data in self.all_software_data:
+            folder = software_data['folder']
+            parsed = parse_software_folder_name(folder.name)
+            sw_name = format_software_name(parsed)
+            author = get_author_raw(parsed)
+            app_store_folder_name = f"{sw_name}-{author}"
+            if app_store_folder_name not in self._favourites:
+                continue
+
+            installed_names.add(app_store_folder_name)
+            app_store_json = (
+                self.software_path.parent / "App_Store"
+                / app_store_folder_name / f"{app_store_folder_name}.json"
+            )
+            dash_folder_id = ""
+            if app_store_json.exists():
+                try:
+                    with open(app_store_json, 'r', encoding='utf-8') as _f:
+                        dash_folder_id = json.load(_f).get('folder_id', '')
+                except Exception:
+                    pass
+            installed_entries.append((software_data, app_store_folder_name, dash_folder_id))
+
+        # Store-only favourites: favourited but not already covered above.
+        store_data = self._load_store_software()
+        store_only_entries = [
+            s for s in store_data
+            if s.get('folder_name', s.get('name')) in self._favourites
+            and s.get('folder_name', s.get('name')) not in installed_names
+        ]
+
+        # Ignore List View's 1-column mode here -- this page only ever
+        # renders grid cards (SoftwareCard/StoreCard), never list rows.
+        columns = 4 if getattr(self, "_sidebar_collapsed", False) else 3
+
+        row = 0
+        if installed_entries:
+            header, expanded = self._build_favourites_section_header(
+                "installed", f"⭐ Installed ({len(installed_entries)})"
+            )
+            self.cards_layout.addWidget(header, row, 0, 1, columns)
+            row += 1
+
+            col = 0
+            for software_data, app_store_folder_name, dash_folder_id in (installed_entries if expanded else []):
+                folder = software_data['folder']
+                card = SoftwareCard(
+                    software_data['name'],
+                    None,
+                    folder,
+                    software_data['is_latest'],
+                    icon_path=software_data.get('icon_path'),
+                    folder_name=app_store_folder_name,
+                    folder_id=dash_folder_id,
+                    readme_available=self._dashboard_readme_exists(folder),
+                    exec_valid=bool(software_data.get('exec_path')),
+                    is_favourite=True,
+                )
+                card.clicked.connect(self.launch_software)
+                card.version_clicked.connect(self.show_version_info)
+                card.readme_clicked.connect(self.show_readme)
+                card.folder_clicked.connect(self.open_folder_location)
+                card.update_clicked.connect(self._on_update_download)
+                card.delete_clicked.connect(self.delete_software)
+                card.card_refresh_clicked.connect(self._on_dashboard_card_refresh_clicked)
+                card.favourite_toggled.connect(self._on_favourite_toggled)
+                self.cards_layout.addWidget(card, row, col)
+
+                self.card_references[str(folder)] = card
+                self.dashboard_folder_name_map[app_store_folder_name] = str(folder)
+
+                col += 1
+                if col >= columns:
+                    col = 0
+                    row += 1
+            if col != 0:
+                row += 1
+
+        if store_only_entries:
+            header, expanded = self._build_favourites_section_header(
+                "store", f"🏪 Available in Store ({len(store_only_entries)})"
+            )
+            self.cards_layout.addWidget(header, row, 0, 1, columns)
+            row += 1
+
+            col = 0
+            for software in (store_only_entries if expanded else []):
+                card = StoreCard(
+                    software_name=software['name'],
+                    author_name=software['author'],
+                    icon_path=software.get('icon_path'),
+                    json_path=software.get('json_path'),
+                    folder_name=software.get('folder_name'),
+                    folder_id=software.get('folder_id', ''),
+                    guide_available=software.get('guide_available', True),
+                    readme_available=software.get('readme_available', True),
+                    is_favourite=True,
+                )
+                card.download_clicked.connect(self._on_store_download)
+                card.guide_clicked.connect(self._on_store_guide_clicked)
+                card.readme_clicked.connect(self._on_store_readme_clicked)
+                card.card_refresh_clicked.connect(self._on_card_refresh_clicked)
+                card.favourite_toggled.connect(self._on_favourite_toggled)
+
+                self.store_card_references[software.get('folder_name', software['name'])] = card
+                self.cards_layout.addWidget(card, row, col)
+
+                col += 1
+                if col >= columns:
+                    col = 0
+                    row += 1
+            if col != 0:
+                row += 1
+
+        # Collect all leftover vertical space into one empty trailing row
+        # instead of QGridLayout's default of spreading it evenly across
+        # every existing row -- otherwise, with only a handful of rows here
+        # (unlike Dashboard/Store's many rows), the header/card rows
+        # themselves get stretched apart with huge gaps.
+        self.cards_layout.setRowStretch(row, 1)
+
+        if not self._is_busy:
+            total = len(installed_entries) + len(store_only_entries)
+            self.status_label.setText(f"⭐ Favourites - {total} app(s)")
+
     def _on_filter_changed(self, text: str):
         """Dispatch filter to the correct page handler."""
         if self.current_page == 0:
@@ -1881,7 +2150,22 @@ class MainWindow(QMainWindow):
             )
 
     def refresh_data(self):
-        """Refresh data from BoxLink API and save to record.json"""
+        """Refresh button entry point -- runs whichever Refresh Setting mode
+        is currently saved (see Settings > Refresh Setting). Defaults to the
+        full "Refresh Now" behavior (mode 1) if nothing has been saved yet.
+        """
+        mode = getattr(self, "_refresh_setting_mode", 1)
+        if mode == 2:
+            self._run_refresh_select(self._refresh_setting_selected_apps)
+        elif mode == 3:
+            self._run_refresh_no_readme_guide()
+        elif mode == 4:
+            self._run_refresh_new_apps_only()
+        else:
+            self._run_refresh_now()
+
+    def _run_refresh_now(self):
+        """Refresh Setting #1: full refresh -- icon + README + Guide, all apps."""
         # Show loading indicator
         self.show_loading()
         self._begin_busy_status()
@@ -2104,6 +2388,317 @@ class MainWindow(QMainWindow):
             # Hide loading indicator
             self.hide_loading()
             self._end_busy_status()
+
+    # ── Settings > Refresh Setting ───────────────────────────────────────
+
+    def _refresh_button_label(self):
+        if self._refresh_setting_mode == 1:
+            return "⟳  Refresh"
+        return f"⟳  Refresh({self._refresh_setting_mode})"
+
+    def _update_refresh_button_label(self):
+        if hasattr(self, "refresh_btn"):
+            self.refresh_btn.setText(self._refresh_button_label())
+
+    def _load_refresh_setting(self):
+        """Load the persisted Refresh Setting (mode 1-4, + selected apps for
+        mode 2) so the Refresh button's saved behavior survives app restarts.
+        Defaults to mode 1 (Refresh Now) if nothing was ever saved.
+        """
+        self._refresh_setting_mode = 1
+        self._refresh_setting_selected_apps = []
+        try:
+            if self._refresh_setting_path.exists():
+                with open(self._refresh_setting_path, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                self._refresh_setting_mode = saved.get('mode', 1)
+                self._refresh_setting_selected_apps = saved.get('selected_apps', [])
+        except Exception as exc:
+            print(f"[SETTINGS] Could not load refresh_setting.json: {exc}")
+
+    def _save_refresh_setting(self, mode, selected_apps=None):
+        """Persist which Refresh Setting mode the Refresh button should run
+        next time, and update the button's "Refresh(N)" label immediately.
+        """
+        self._refresh_setting_mode = mode
+        self._refresh_setting_selected_apps = selected_apps or []
+        self._update_refresh_button_label()
+        try:
+            self.config_path.mkdir(exist_ok=True)
+            with open(self._refresh_setting_path, 'w', encoding='utf-8') as f:
+                json.dump(
+                    {'mode': mode, 'selected_apps': self._refresh_setting_selected_apps},
+                    f, indent=2,
+                )
+        except Exception as exc:
+            print(f"[SETTINGS] Could not save refresh_setting.json: {exc}")
+
+    # ── Favourites ────────────────────────────────────────────────────────
+
+    def _load_favourites(self):
+        """Load the persisted favourites set. Defaults to empty if nothing
+        was ever saved."""
+        self._favourites = set()
+        try:
+            if self._favourites_path.exists():
+                with open(self._favourites_path, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                self._favourites = set(saved.get('favourites', []))
+        except Exception as exc:
+            print(f"[FAVOURITES] Could not load favourites.json: {exc}")
+
+    def _save_favourites(self):
+        try:
+            self.config_path.mkdir(exist_ok=True)
+            with open(self._favourites_path, 'w', encoding='utf-8') as f:
+                json.dump({'favourites': sorted(self._favourites)}, f, indent=2)
+        except Exception as exc:
+            print(f"[FAVOURITES] Could not save favourites.json: {exc}")
+
+    def _is_favourite(self, folder_name):
+        return folder_name in self._favourites
+
+    def _on_favourite_toggled(self, folder_name, is_fav):
+        """A card/row's bookmark was clicked. Only the Favourites page itself
+        ever needs an immediate rebuild here -- Dashboard/Store/List View
+        already show the toggle instantly on the widget that was clicked,
+        and every other page re-reads self._favourites fresh the next time
+        it's displayed, so there's nothing else to keep in sync.
+
+        Must go through _display_current_page() (not _display_favourites_page()
+        directly) -- that's the method that clears cards_layout first; calling
+        the page-display method on its own leaves the old cards in the grid
+        and just appends new ones underneath, doubling everything on screen.
+        """
+        if is_fav:
+            self._favourites.add(folder_name)
+        else:
+            self._favourites.discard(folder_name)
+        self._save_favourites()
+
+        if self.current_page == 2:
+            self._display_current_page()
+
+    def _open_settings_dialog(self):
+        """Open the Settings dialog (currently just the Refresh Setting group)."""
+        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
+        app_names = sorted(
+            f.name for f in app_store_path.iterdir() if f.is_dir()
+        ) if app_store_path.exists() else []
+
+        dialog = SettingsDialog(
+            app_names, parent=self,
+            active_mode=self._refresh_setting_mode,
+            active_selected_apps=self._refresh_setting_selected_apps,
+        )
+        dialog.refresh_now_requested.connect(self._on_refresh_now_requested)
+        dialog.refresh_select_requested.connect(self._on_refresh_select_requested)
+        dialog.refresh_no_readme_guide_requested.connect(self._on_refresh_no_readme_guide_requested)
+        dialog.refresh_new_apps_requested.connect(self._on_refresh_new_apps_requested)
+        dialog.exec()
+
+    def _on_refresh_now_requested(self):
+        """Refresh Setting #1: save as the active mode. Actually running it
+        is left to the Refresh button -- Settings only decides what it does."""
+        self._save_refresh_setting(1)
+
+    def _resolve_folder_ids(self, names):
+        """Look up each app's Box folder_id from its own App_Store/<name>/<name>.json
+        metadata (written by the last refresh's Pass 1), so a targeted refresh
+        doesn't need a full top-level Box scan just to find folder IDs.
+        """
+        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
+        targets = []
+        for name in names:
+            json_path = app_store_path / name / f"{name}.json"
+            if not json_path.exists():
+                continue
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                folder_id = meta.get('folder_id')
+                if folder_id:
+                    targets.append((name, folder_id))
+            except Exception:
+                continue
+        return targets
+
+    def _on_refresh_select_requested(self, selected_names):
+        """Refresh Setting #2: save the ticked app(s) as the active mode.
+        Actually running it is left to the Refresh button."""
+        self._save_refresh_setting(2, selected_names)
+
+    def _run_refresh_select(self, selected_names):
+        """Refresh Setting #2: icon+README+Guide, only the given app(s)."""
+        targets = self._resolve_folder_ids(selected_names)
+        if not targets:
+            self.status_label.setText("⚠️ Could not resolve Box folder ID(s) for the selected app(s).")
+            return
+        self._run_targeted_refresh(targets, label=f"Refreshing {len(targets)} selected app(s)")
+
+    def _on_refresh_no_readme_guide_requested(self):
+        """Refresh Setting #3: save as the active mode. Actually running it
+        is left to the Refresh button."""
+        self._save_refresh_setting(3)
+
+    def _run_refresh_no_readme_guide(self):
+        """Refresh Setting > icon + Flow.txt + metadata only, all apps."""
+        self.show_loading()
+        self._begin_busy_status()
+        token = self._claim_status_owner()
+        label = "🔄 Refreshing (icon + metadata only, no README/Guide, all apps)"
+        self.status_label.setText(f"{label}...")
+        self._start_progress_heartbeat(token, label)
+
+        worker = RefreshWorker(None, self.config_path, self.record_file)
+        self._settings_refresh_worker = worker
+        worker.finished.connect(self._on_no_readme_guide_scan_complete)
+        thread = Thread(target=worker.run, daemon=True)
+        thread.start()
+
+    def _on_no_readme_guide_scan_complete(self, result):
+        """Box scan finished for the 'no README/Guide' refresh -- now download
+        icon + Flow.txt + metadata only for everything that was found."""
+        self._stop_progress_heartbeat()
+        success, data, error = result
+
+        if not success:
+            self.status_label.setText(f"⚠️ Refresh failed: {error}")
+            self._report_log(f"Refresh (no readme/guide) failed: {error}")
+            self.hide_loading()
+            self._end_busy_status()
+            if is_dotnet_missing_error(error):
+                self._show_dotnet_missing_dialog()
+            return
+
+        self.config_path.mkdir(exist_ok=True)
+        with open(self.record_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+
+        self.load_software(reset_page=False)
+        self.status_label.setText("📝 Downloading icons + metadata only (no README/Guide)...")
+
+        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
+        worker = AppStoreDownloadWorker(data, app_store_path, skip_readme_and_guide=True)
+        self._settings_download_worker = worker
+        worker.progress.connect(self._on_download_progress)
+        worker.finished.connect(self._on_download_complete)
+        thread = Thread(target=worker.run, daemon=True)
+        thread.start()
+
+    def _on_refresh_new_apps_requested(self):
+        """Refresh Setting #4: save as the active mode. Actually running it
+        is left to the Refresh button."""
+        self._save_refresh_setting(4)
+
+    def _run_refresh_new_apps_only(self):
+        """Refresh Setting > only capture apps in Box that aren't in App_Store yet."""
+        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
+        known_names = {
+            f.name for f in app_store_path.iterdir() if f.is_dir()
+        } if app_store_path.exists() else set()
+
+        self.show_loading()
+        self._begin_busy_status()
+        token = self._claim_status_owner()
+        self.status_label.setText("🔍 Checking Box for new apps...")
+        self._start_progress_heartbeat(token, "🔍 Checking Box for new apps")
+
+        worker = NewAppsScanWorker(known_names)
+        self._new_apps_scan_worker = worker
+        worker.finished.connect(self._on_new_apps_scan_complete)
+        thread = Thread(target=worker.run, daemon=True)
+        thread.start()
+
+    def _on_new_apps_scan_complete(self, result):
+        self._stop_progress_heartbeat()
+        success, new_targets, error = result
+
+        if not success:
+            self.status_label.setText(f"⚠️ Could not check Box for new apps: {error}")
+            self._report_log(f"New-apps scan failed: {error}")
+            self.hide_loading()
+            self._end_busy_status()
+            if is_dotnet_missing_error(error):
+                self._show_dotnet_missing_dialog()
+            return
+
+        if not new_targets:
+            self.status_label.setText("✓ No new apps found in Box -- everything is already onboarded.")
+            self.hide_loading()
+            self._end_busy_status()
+            return
+
+        names = ", ".join(name for name, _ in new_targets)
+        self._run_targeted_refresh(new_targets, label=f"Capturing {len(new_targets)} new app(s): {names}")
+
+    def _run_targeted_refresh(self, targets, label):
+        """Shared path for 'Refresh Select' and 'new apps only': scan +
+        download just the given [(name, folder_id), ...] pairs, patching
+        record.json per item instead of overwriting it wholesale so apps
+        outside the target list are left untouched.
+        """
+        self.show_loading()
+        self._begin_busy_status()
+        token = self._claim_status_owner()
+        self.status_label.setText(f"🔄 {label}...")
+        self._start_progress_heartbeat(token, f"🔄 {label}")
+
+        worker = TargetedRefreshWorker(targets, self.config_path, self.record_file)
+        self._targeted_refresh_worker = worker
+        worker.progress.connect(lambda msg: self._set_status_if_current(token, f"🔄 {msg}"))
+        worker.finished.connect(self._on_targeted_scan_complete)
+        thread = Thread(target=worker.run, daemon=True)
+        thread.start()
+
+    def _on_targeted_scan_complete(self, result):
+        self._stop_progress_heartbeat()
+        success, data, error = result
+
+        if not success or not data or not data.get('items'):
+            self.status_label.setText(f"⚠️ Refresh failed: {error or 'no apps scanned'}")
+            self._report_log(f"Targeted refresh failed: {error}")
+            self.hide_loading()
+            self._end_busy_status()
+            if error and is_dotnet_missing_error(error):
+                self._show_dotnet_missing_dialog()
+            return
+
+        # Patch just these apps' entries into record.json -- a targeted
+        # refresh must never overwrite entries for apps it didn't touch.
+        for item in data['items']:
+            self._update_record_json(item)
+
+        self.load_software(reset_page=False)
+        self.status_label.setText(f"📝 Downloading assets for {len(data['items'])} app(s)...")
+
+        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
+        worker = AppStoreDownloadWorker(data, app_store_path)
+        self._targeted_download_worker = worker
+        worker.progress.connect(self._on_download_progress)
+        worker.finished.connect(self._on_targeted_download_complete)
+        thread = Thread(target=worker.run, daemon=True)
+        thread.start()
+
+    def _on_targeted_download_complete(self, result):
+        """Like _on_download_complete, but never runs _cleanup_app_store --
+        a targeted refresh only touched a subset of apps, so cleaning up
+        "everything not in record.json" would wrongly delete every app that
+        was correctly left alone.
+        """
+        success, message, created, failed, skipped = result
+
+        if success:
+            self.status_label.setText(f"✓ Complete! {message}" if message else "✓ Complete!")
+            self._store_data_cache = None
+            self.load_software(reset_page=False)
+            self._display_current_page()
+        else:
+            self.status_label.setText(f"⚠️ {message}")
+            self._report_log(f"Targeted download incomplete: {message}")
+
+        self.hide_loading()
+        self._end_busy_status()
 
     def check_version_status(self, folder_path):
         """
@@ -3523,7 +4118,10 @@ class MainWindow(QMainWindow):
 
         Looks up App_Store/<name>-<author>/Flow.txt, reads [ReadMe] Flag= and file=,
         and returns the readme file path and its containing folder if found.
-        Returns (None, None) if not available.
+        Falls back to a bare README.md in that same folder if Flow.txt has no
+        [ReadMe] section (or its declared file is missing) -- matches the
+        same fallback the download side uses. Returns (None, None) if
+        neither is available.
         """
         from .folder_parser import parse_software_folder_name, format_software_name, get_author_raw
 
@@ -3535,7 +4133,8 @@ class MainWindow(QMainWindow):
         flow_txt = app_store_dir / "Flow.txt"
 
         if not flow_txt.exists():
-            return None, None
+            bare_readme = app_store_dir / "README.md"
+            return (bare_readme, app_store_dir) if bare_readme.exists() else (None, None)
 
         readme_flag = False
         readme_filename = None
@@ -3566,6 +4165,15 @@ class MainWindow(QMainWindow):
             candidate = app_store_dir / readme_filename
             if candidate.exists():
                 return candidate, app_store_dir
+
+        # Safety fallback: no [ReadMe] declared (or its file missing), but a
+        # bare README.md sits in the App_Store folder anyway -- matches the
+        # same fallback AppStoreDownloadWorker's Pass 3 uses when deciding
+        # what to download, so a README that got pulled in without an
+        # explicit Flow.txt declaration isn't invisible to this lookup too.
+        bare_readme = app_store_dir / "README.md"
+        if bare_readme.exists():
+            return bare_readme, app_store_dir
 
         return None, None
 

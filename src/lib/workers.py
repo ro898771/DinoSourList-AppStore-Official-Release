@@ -152,6 +152,83 @@ class SingleCardRefreshWorker(RefreshWorker):
             self.finished.emit((False, None, str(e)))
 
 
+class TargetedRefreshWorker(RefreshWorker):
+    """Re-scan Box for an explicit list of (folder_name, folder_id) folders
+    only, instead of the whole drive. Backs "Refresh Select" (user-ticked
+    apps) and "new apps only" (apps not yet in App_Store) in Refresh Setting.
+    """
+    progress = Signal(str)
+
+    def __init__(self, targets, config_path, record_file):
+        super().__init__(None, config_path, record_file)
+        self.targets = list(targets)  # [(folder_name, folder_id), ...]
+
+    def run(self):
+        try:
+            if not self.targets:
+                self.finished.emit((True, {'items': []}, None))
+                return
+
+            items = []
+            max_workers = min(len(self.targets), 10)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_target = {
+                    executor.submit(self._get_folder_contents_recursive, folder_id): (folder_name, folder_id)
+                    for folder_name, folder_id in self.targets
+                }
+                for future in as_completed(future_to_target):
+                    folder_name, folder_id = future_to_target[future]
+                    self.progress.emit(f"Scanning Box for {folder_name}...")
+                    try:
+                        contents = future.result()
+                    except Exception:
+                        contents = None
+                    if contents:
+                        items.append({
+                            'type': 'folder',
+                            'name': folder_name,
+                            'id': folder_id,
+                            'contents': contents,
+                        })
+                    else:
+                        self.progress.emit(f"  ⚠ Could not scan '{folder_name}' from Box")
+
+            self.finished.emit((True, {'items': items}, None))
+        except Exception as e:
+            self.finished.emit((False, None, str(e)))
+
+
+class NewAppsScanWorker(QObject):
+    """Lists Box's top-level folders and diffs against the App_Store folders
+    already on disk, to find apps uploaded to Box that haven't been onboarded
+    locally yet. Deliberately shallow (no recursive contents fetch) -- just
+    enough to know which folders are new before doing the expensive part.
+    """
+    finished = Signal(object)  # (success, new_targets: list[(name, id)], error)
+
+    def __init__(self, known_names):
+        super().__init__()
+        self.known_names = set(known_names)
+
+    def run(self):
+        try:
+            api = BoxLinkAPI()
+            success, data, error = api.get_info_default_dict()
+            if not success:
+                self.finished.emit((False, None, error))
+                return
+
+            new_targets = [
+                (item['name'], item['id'])
+                for item in (data or {}).get('items', [])
+                if item.get('type') == 'folder' and item.get('id')
+                and item.get('name') not in self.known_names
+            ]
+            self.finished.emit((True, new_targets, None))
+        except Exception as e:
+            self.finished.emit((False, None, str(e)))
+
+
 class CheckWorker(QObject):
     """Worker for version check operation"""
     finished = Signal(object)

@@ -131,7 +131,7 @@ REFRESH_BUTTON_STYLE = """
         color: #4338ca;
         border: none;
         border-radius: 10px;
-        padding: 10px 20px;
+        padding: 10px 12px;
         font-size: 14px;
         font-weight: 700;
     }
@@ -378,6 +378,25 @@ SIDEBAR_LOGOUT_STYLE = """
     }
     QPushButton:hover {
         background-color: #fbd5d5;
+    }
+"""
+
+# Sidebar footer: Settings button, sits directly above Exit -- neutral
+# indigo (matches the active nav-item accent) rather than red, since it
+# isn't a destructive action.
+SIDEBAR_SETTINGS_STYLE = """
+    QPushButton {
+        background-color: #eef0ff;
+        color: #4338ca;
+        border: none;
+        border-radius: 12px;
+        padding: 10px 14px;
+        font-size: 14px;
+        font-weight: 700;
+        text-align: left;
+    }
+    QPushButton:hover {
+        background-color: #e3e6ff;
     }
 """
 

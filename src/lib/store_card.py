@@ -13,6 +13,7 @@ from .styles import (
     get_version_label_style, DISABLED_ACTION_LABEL_STYLE,
 )
 from .clickable_label import ClickableLabel
+from .bookmark_button import BookmarkButton
 
 
 class StoreCard(QFrame):
@@ -21,9 +22,11 @@ class StoreCard(QFrame):
     guide_clicked = Signal(str)               # Emits software_name when guide is clicked
     readme_clicked = Signal(str)              # Emits software_name when ReadMe is clicked
     card_refresh_clicked = Signal(str, str)   # Emits (folder_name, folder_id)
+    favourite_toggled = Signal(str, bool)     # Emits (folder_name, new_is_favourite)
 
     def __init__(self, software_name, author_name, icon_path=None, json_path=None,
-                 folder_name=None, folder_id=None, guide_available=True, readme_available=True):
+                 folder_name=None, folder_id=None, guide_available=True, readme_available=True,
+                 is_favourite=False):
         super().__init__()
         self.software_name = software_name
         self.author_name = author_name
@@ -31,6 +34,7 @@ class StoreCard(QFrame):
         self.json_path = Path(json_path) if json_path else None
         self.folder_name = folder_name or f"{software_name}-{author_name}"
         self.folder_id = folder_id or ""
+        self.is_favourite = is_favourite
         self.versions_data = []  # List of (version, file_id) tuples
 
         self.setFixedSize(320, 312)
@@ -90,7 +94,11 @@ class StoreCard(QFrame):
 
         top_row.addStretch()
 
-        # Tiny per-card refresh button (top-right)
+        # Right column: tiny per-card refresh button on top, favourite star below
+        right_col = QVBoxLayout()
+        right_col.setSpacing(4)
+        right_col.setAlignment(Qt.AlignTop)
+
         self.refresh_card_btn = ClickableLabel("⟳")
         self.refresh_card_btn.setAlignment(Qt.AlignCenter)
         self.refresh_card_btn.setCursor(Qt.PointingHandCursor)
@@ -112,7 +120,13 @@ class StoreCard(QFrame):
             }
         """)
         self.refresh_card_btn.clicked.connect(self._on_card_refresh_clicked)
-        top_row.addWidget(self.refresh_card_btn)
+        right_col.addWidget(self.refresh_card_btn)
+
+        self.favourite_btn = BookmarkButton(is_favourite=self.is_favourite, size=26)
+        self.favourite_btn.clicked.connect(self._on_favourite_clicked)
+        right_col.addWidget(self.favourite_btn)
+
+        top_row.addLayout(right_col)
 
         layout.addLayout(top_row)
         
@@ -281,6 +295,11 @@ class StoreCard(QFrame):
     def _on_card_refresh_clicked(self):
         """Handle tiny per-card refresh button click"""
         self.card_refresh_clicked.emit(self.folder_name, self.folder_id)
+
+    def _on_favourite_clicked(self):
+        """Flip the bookmark locally for instant feedback, then notify the controller."""
+        self.is_favourite = self.favourite_btn.toggle()
+        self.favourite_toggled.emit(self.folder_name, self.is_favourite)
 
     def set_refreshing(self, is_refreshing: bool):
         """Toggle visual state of the refresh button while syncing."""

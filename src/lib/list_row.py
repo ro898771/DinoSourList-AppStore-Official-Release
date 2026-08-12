@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QComboBox
 from PySide6.QtCore import Qt, Signal
 
 from .clickable_label import ClickableLabel
+from .bookmark_button import BookmarkButton
 from .folder_parser import (
     parse_software_folder_name, format_software_name, format_version,
     format_author, get_author_raw,
@@ -62,6 +63,19 @@ _ROW_REFRESH_STYLE = """
         color: #0a58ca;
     }
 """
+def _make_favourite_button(row):
+    """Shared bookmark button for SoftwareListRow/StoreListRow -- both
+    classes have identical favourite behavior, only the row-specific
+    attributes (self.folder_name, self.is_favourite) differ.
+    """
+    btn = BookmarkButton(is_favourite=row.is_favourite, size=28)
+    btn.clicked.connect(lambda: _on_favourite_clicked(row, btn))
+    return btn
+
+
+def _on_favourite_clicked(row, btn):
+    row.is_favourite = btn.toggle()
+    row.favourite_toggled.emit(row.folder_name, row.is_favourite)
 
 
 class SoftwareListRow(QFrame):
@@ -73,14 +87,16 @@ class SoftwareListRow(QFrame):
     update_clicked = Signal(str, str, str)
     delete_clicked = Signal(str)
     card_refresh_clicked = Signal(str, str)
+    favourite_toggled = Signal(str, bool)
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
                  icon_path=None, folder_name=None, folder_id=None, readme_available=True,
-                 sequence_number=None, exec_valid=True):
+                 sequence_number=None, exec_valid=True, is_favourite=False):
         super().__init__()
         self.folder_path = folder_path
         self.folder_name = folder_name or folder_path.name
         self.folder_id = folder_id or ""
+        self.is_favourite = is_favourite
         self.versions_data = []
         self.is_latest = is_latest
         self.exec_valid = exec_valid
@@ -105,6 +121,8 @@ class SoftwareListRow(QFrame):
         # Every child below has a fixed height smaller than the row -- center
         # them as a group instead of letting them default to the top/bottom.
         layout.setAlignment(Qt.AlignVCenter)
+
+        layout.addWidget(_make_favourite_button(self), 0, Qt.AlignVCenter)
 
         seq_label = QLabel(f"{sequence_number}." if sequence_number else "")
         seq_label.setFixedSize(30, 28)
@@ -150,7 +168,7 @@ class SoftwareListRow(QFrame):
         delete_button.clicked.connect(lambda: self.delete_clicked.emit(str(self.folder_path)))
         layout.addWidget(delete_button, 0, Qt.AlignVCenter)
 
-        self.folder_button = ClickableLabel(">")
+        self.folder_button = ClickableLabel("»")
         self.folder_button.setAlignment(Qt.AlignCenter)
         self.folder_button.setCursor(Qt.PointingHandCursor)
         self.folder_button.setFixedSize(28, 28)
@@ -317,16 +335,18 @@ class StoreListRow(QFrame):
     guide_clicked = Signal(str)
     readme_clicked = Signal(str)
     card_refresh_clicked = Signal(str, str)
+    favourite_toggled = Signal(str, bool)
 
     def __init__(self, software_name, author_name, icon_path=None, json_path=None,
                  folder_name=None, folder_id=None, guide_available=True, readme_available=True,
-                 sequence_number=None):
+                 sequence_number=None, is_favourite=False):
         super().__init__()
         self.software_name = software_name
         self.author_name = author_name
         self.json_path = Path(json_path) if json_path else None
         self.folder_name = folder_name or f"{software_name}-{author_name}"
         self.folder_id = folder_id or ""
+        self.is_favourite = is_favourite
         self.versions_data = []
 
         self.setFixedWidth(LIST_ROW_WIDTH)
@@ -339,6 +359,8 @@ class StoreListRow(QFrame):
         # Every child below has a fixed height smaller than the row -- center
         # them as a group instead of letting them default to the top/bottom.
         layout.setAlignment(Qt.AlignVCenter)
+
+        layout.addWidget(_make_favourite_button(self), 0, Qt.AlignVCenter)
 
         seq_label = QLabel(f"{sequence_number}." if sequence_number else "")
         seq_label.setFixedSize(30, 28)
