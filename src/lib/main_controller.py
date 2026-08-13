@@ -54,6 +54,31 @@ from .clickable_label import ClickableLabel
 from .collapse_toggle import CollapseToggleButton
 
 
+# Store page category sections (Flow.txt [Category] cluster=) render in this
+# order first; any cluster name not listed here -- including ones that don't
+# exist yet -- is appended after, sorted alphabetically. MISC always renders
+# dead last, after even those unlisted categories -- it's a catch-all bucket,
+# not a priority one.
+STORE_CATEGORY_ORDER = ["Dev Tool", "Foundation"]
+STORE_CATEGORY_LAST = "MISC"
+
+# Store page category filter dropdown -- shows every section (no narrowing).
+STORE_CATEGORY_FILTER_ALL = "All Sections"
+
+
+def _store_category_sort_key(name):
+    """Shared ordering for category names: STORE_CATEGORY_ORDER first, then
+    any other cluster name alphabetically, then STORE_CATEGORY_LAST dead
+    last -- used both to lay out Store page sections and to order the
+    category filter dropdown's options, so the two never drift apart."""
+    if name == STORE_CATEGORY_LAST:
+        return (len(STORE_CATEGORY_ORDER) + 1, "")
+    try:
+        return (STORE_CATEGORY_ORDER.index(name), "")
+    except ValueError:
+        return (len(STORE_CATEGORY_ORDER), name.lower())
+
+
 class _LLMWorker(QObject):
     """Background worker that owns a DinosaurVectorBot instance.
 
@@ -165,6 +190,18 @@ class MainWindow(QMainWindow):
         # not persisted -- resets to expanded on app restart). Keyed by
         # "installed"/"store".
         self._favourites_section_expanded = {"installed": True, "store": True}
+
+        # Store page: per-category expand/collapse state, same in-memory-only
+        # pattern as Favourites above. Keyed by Flow.txt [Category] cluster=
+        # name; populated lazily via .get(name, True) as categories are seen.
+        self._store_category_expanded = {}
+
+        # Store page: category filter dropdown selection (beside List View).
+        # STORE_CATEGORY_FILTER_ALL shows every section; otherwise only the
+        # chosen category's cards are laid out, so the page stays scannable
+        # as the App_Store folder grows instead of always rendering every
+        # section. Not persisted -- resets to "All Sections" on app restart.
+        self._store_category_filter = STORE_CATEGORY_FILTER_ALL
 
         # Page names
         self.page_names = [
@@ -291,6 +328,20 @@ class MainWindow(QMainWindow):
         controls_row.addWidget(self.list_view_checkbox)
         controls_row.addSpacing(12)
 
+        # Category filter -- Software Store only. Narrows the grid/list to
+        # one Flow.txt [Category] cluster= at a time so the page stays easy
+        # to scan as the App_Store folder grows, instead of always rendering
+        # every section. Options are (re)populated from the live store data
+        # in _sync_store_category_filter_combo; "All Sections" shows everything.
+        self.store_category_filter_combo = QComboBox()
+        self.store_category_filter_combo.setStyleSheet(COMBOBOX_STYLE)
+        self.store_category_filter_combo.setCursor(Qt.PointingHandCursor)
+        self.store_category_filter_combo.setMinimumWidth(160)
+        self.store_category_filter_combo.addItem(STORE_CATEGORY_FILTER_ALL)
+        self.store_category_filter_combo.currentTextChanged.connect(self._on_store_category_filter_changed)
+        controls_row.addWidget(self.store_category_filter_combo)
+        controls_row.addSpacing(12)
+
         # Refresh button -- aligned above the last (4th) card of the grid below,
         # not just floated to the window's edge.
         self.refresh_btn = QPushButton(self._refresh_button_label())
@@ -395,7 +446,9 @@ class MainWindow(QMainWindow):
         # Pre-warm the Store page's data cache now, before the window is shown,
         # so the first navigation to the Store tab doesn't pay for the App_Store
         # scan — it just reads the already-populated cache.
-        self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(self._load_store_software())}")
+        _initial_store_data = self._load_store_software()
+        self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(_initial_store_data)}")
+        self.sidebar_category_count_label.setText(f"🏷️  Software Categories: {self._count_store_categories(_initial_store_data)}")
         self._sync_installed_tools("launch")
         self._register_app_user()
         # Apply correct visibility and placeholder for the initial page
@@ -1031,6 +1084,10 @@ class MainWindow(QMainWindow):
         self.sidebar_store_count_label.setStyleSheet(SIDEBAR_INFO_STYLE)
         sidebar_layout.addWidget(self.sidebar_store_count_label)
 
+        self.sidebar_category_count_label = QLabel("🏷️  Software Categories: 0")
+        self.sidebar_category_count_label.setStyleSheet(SIDEBAR_INFO_STYLE)
+        sidebar_layout.addWidget(self.sidebar_category_count_label)
+
         sidebar_layout.addSpacing(8)
 
         self.sidebar_settings_btn = QPushButton("⚙️  Setting")
@@ -1338,6 +1395,10 @@ class MainWindow(QMainWindow):
         # List View checkbox: same pages as the filter box/Refresh button
         self.list_view_checkbox.setVisible(on_filtered_page)
 
+        # Category filter: Software Store only -- Dashboard cards aren't
+        # grouped by category, so the dropdown would have nothing to filter.
+        self.store_category_filter_combo.setVisible(self.current_page == 1)
+
         # A-Z jump bar: List View only, and only on the pages that have a list view
         self.az_bar_widget.setVisible(self._list_view_enabled and on_filtered_page)
 
@@ -1519,10 +1580,18 @@ class MainWindow(QMainWindow):
             )
 
     def _display_store_page(self):
-        """Display Software Store page (Page 2) with cards from App_Store"""
+        """Display Software Store page (Page 2) with cards from App_Store.
+
+        Both the card grid and List View group apps into collapsible
+        sections by Flow.txt's [Category] cluster= value (same
+        collapsible-header pattern as the Favourites page, via
+        _build_collapsible_section_header) -- List View is just the
+        1-column case of the same _layout_store_categories call.
+        """
         # Load store software data
         store_data = self._load_store_software()
-        
+        self._sync_store_category_filter_combo(store_data)
+
         if not store_data:
             # Show placeholder if no store data
             container = QWidget()
@@ -1558,67 +1627,173 @@ class MainWindow(QMainWindow):
             self.cards_layout.addWidget(container, 0, 0, 4, 4)
             self.status_label.setText(f"📦 {self.page_names[self.current_page]} - No data")
             self.sidebar_store_count_label.setText("🏪  Software Store: 0")
+            self.sidebar_category_count_label.setText("🏷️  Software Categories: 0")
             return
         
-        # List View sorts alphabetically by name so the sequence number and
-        # the A-Z jump bar (see _jump_to_letter) line up with what's on
-        # screen; sort a copy -- store_data is the cached list, don't mutate it.
-        if self._list_view_enabled:
-            store_data = sorted(store_data, key=lambda sw: sw['name'].lower())
-
-        # Display ALL cards in grid (4 columns, scrollable rows)
-        row = 0
-        col = 0
         self.store_card_references = {}  # folder_name → StoreCard
 
-        for i, software in enumerate(store_data):
-            # Create store card (or list row, if List View is checked)
-            row_class = StoreListRow if self._list_view_enabled else StoreCard
-            extra_kwargs = {'sequence_number': i + 1} if self._list_view_enabled else {}
-            card = row_class(
-                software_name=software['name'],
-                author_name=software['author'],
-                icon_path=software.get('icon_path'),
-                json_path=software.get('json_path'),
-                folder_name=software.get('folder_name'),
-                folder_id=software.get('folder_id', ''),
-                guide_available=software.get('guide_available', True),
-                readme_available=software.get('readme_available', True),
-                is_favourite=self._is_favourite(software.get('folder_name', software['name'])),
-                **extra_kwargs,
-            )
+        # Category filter narrows what actually gets laid out below; the
+        # sidebar counts above stay based on the full, unfiltered store_data
+        # since they describe overall inventory, not the current view.
+        display_data = store_data
+        if self._store_category_filter != STORE_CATEGORY_FILTER_ALL:
+            display_data = [
+                sw for sw in store_data
+                if (sw.get('category') or STORE_CATEGORY_LAST) == self._store_category_filter
+            ]
 
-            # Connect signals
-            card.download_clicked.connect(self._on_store_download)
-            card.guide_clicked.connect(self._on_store_guide_clicked)
-            card.readme_clicked.connect(self._on_store_readme_clicked)
-            card.card_refresh_clicked.connect(self._on_card_refresh_clicked)
-            card.favourite_toggled.connect(self._on_favourite_toggled)
+        # Both views share the same categorized layout -- List View is just
+        # the 1-column case, with sequence numbers restored so the A-Z jump
+        # bar still has something to number rows by.
+        row_class = StoreListRow if self._list_view_enabled else StoreCard
+        columns = 1 if self._list_view_enabled else self._current_card_columns()
+        final_row = self._layout_store_categories(display_data, row_class, columns)
+        self.cards_layout.setRowStretch(final_row, 1)
 
-            self.store_card_references[software.get('folder_name', software['name'])] = card
-
-            self.cards_layout.addWidget(card, row, col)
-
-            col += 1
-            if col >= self._current_card_columns():
-                col = 0
-                row += 1
-        
         self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(store_data)}")
+        self.sidebar_category_count_label.setText(f"🏷️  Software Categories: {self._count_store_categories(store_data)}")
 
         # Update status — skip while a refresh/download is in progress so we
         # don't stomp on its live progress text (it's re-applied when done)
         if not self._is_busy:
-            total_software = len(store_data)
-            self.status_label.setText(f"🏪 {self.page_names[self.current_page]} - {total_software} software available")
-    
-    def _build_favourites_section_header(self, key, title):
-        """Build a collapsible section header row for the Favourites page:
-        title on the left, a "Click to hide/show" hint + chevron on the
-        right. *key* is "installed" or "store" -- looked up/stored in
-        self._favourites_section_expanded. Returns (header_widget, expanded).
+            total_software = len(display_data)
+            if self._store_category_filter == STORE_CATEGORY_FILTER_ALL:
+                self.status_label.setText(f"🏪 {self.page_names[self.current_page]} - {total_software} software available")
+            else:
+                self.status_label.setText(
+                    f"🏪 {self.page_names[self.current_page]} - {total_software} software in \"{self._store_category_filter}\""
+                )
+
+    def _sync_store_category_filter_combo(self, store_data):
+        """Keep the category filter dropdown's options in sync with the
+        categories actually present in store_data, without disturbing the
+        user's current selection -- unless that category has disappeared
+        (e.g. a refresh drops its last app), in which case it falls back
+        to STORE_CATEGORY_FILTER_ALL."""
+        categories = sorted(
+            {sw.get('category') or STORE_CATEGORY_LAST for sw in store_data},
+            key=_store_category_sort_key,
+        )
+        options = [STORE_CATEGORY_FILTER_ALL] + categories
+        current_items = [
+            self.store_category_filter_combo.itemText(i)
+            for i in range(self.store_category_filter_combo.count())
+        ]
+        if current_items == options:
+            return
+
+        selected = self._store_category_filter if self._store_category_filter in options else STORE_CATEGORY_FILTER_ALL
+        self._store_category_filter = selected
+
+        self.store_category_filter_combo.blockSignals(True)
+        self.store_category_filter_combo.clear()
+        self.store_category_filter_combo.addItems(options)
+        self.store_category_filter_combo.setCurrentText(selected)
+        self.store_category_filter_combo.blockSignals(False)
+
+    def _on_store_category_filter_changed(self, text):
+        """Re-render the Store page narrowed to the chosen category (or
+        show every section again for STORE_CATEGORY_FILTER_ALL).
+
+        Goes through _display_current_page() rather than calling
+        _display_store_page() directly -- that's what clears the old grid
+        widgets and resets row stretches first. Skipping it left the
+        previous (differently-sized) layout's widgets and row-stretch
+        factors in place, so switching between a narrow category and "All
+        Sections" produced misaligned section headers/cards.
         """
-        expanded = self._favourites_section_expanded.get(key, True)
+        if not text or text == self._store_category_filter:
+            return
+        self._store_category_filter = text
+        if self.current_page == 1:
+            self._display_current_page()
+
+    def _build_store_card(self, software, row_class, sequence_number=None):
+        """Construct one StoreCard/StoreListRow + wire its signals + register
+        it in self.store_card_references -- shared by List View and the
+        categorized grid so the signal wiring only lives in one place.
+        """
+        extra_kwargs = {'sequence_number': sequence_number} if sequence_number is not None else {}
+        card = row_class(
+            software_name=software['name'],
+            author_name=software['author'],
+            icon_path=software.get('icon_path'),
+            json_path=software.get('json_path'),
+            folder_name=software.get('folder_name'),
+            folder_id=software.get('folder_id', ''),
+            guide_available=software.get('guide_available', True),
+            readme_available=software.get('readme_available', True),
+            is_favourite=self._is_favourite(software.get('folder_name', software['name'])),
+            **extra_kwargs,
+        )
+        card.download_clicked.connect(self._on_store_download)
+        card.guide_clicked.connect(self._on_store_guide_clicked)
+        card.readme_clicked.connect(self._on_store_readme_clicked)
+        card.card_refresh_clicked.connect(self._on_card_refresh_clicked)
+        card.favourite_toggled.connect(self._on_favourite_toggled)
+        self.store_card_references[software.get('folder_name', software['name'])] = card
+        return card
+
+    def _count_store_categories(self, store_data):
+        """Number of distinct Flow.txt [Category] cluster= values in
+        store_data, counting entries with no category under
+        STORE_CATEGORY_LAST (MISC) -- same bucketing _layout_store_categories
+        uses, so this always matches the number of section headers shown."""
+        return len({software.get('category') or STORE_CATEGORY_LAST for software in store_data})
+
+    def _layout_store_categories(self, store_data, row_class=StoreCard, columns=None):
+        """Group store_data by Flow.txt's [Category] cluster= into
+        collapsible sections -- STORE_CATEGORY_ORDER first, any other
+        cluster name after (alphabetical), then STORE_CATEGORY_LAST (MISC)
+        dead last of all. Shared by both the card grid (row_class=StoreCard,
+        multi-column) and List View (row_class=StoreListRow, columns=1) --
+        List View rows get a running sequence number across all categories,
+        for the A-Z jump bar (see _jump_to_letter) to number against.
+        Returns the next empty grid row so the caller can anchor a trailing
+        stretch row there.
+        """
+        groups = {}
+        for software in store_data:
+            groups.setdefault(software.get('category') or STORE_CATEGORY_LAST, []).append(software)
+
+        if columns is None:
+            columns = self._current_card_columns()
+        numbered = row_class is StoreListRow
+
+        row = 0
+        seq = 0
+        for category in sorted(groups.keys(), key=_store_category_sort_key):
+            apps = sorted(groups[category], key=lambda sw: sw['name'].lower())
+            header, expanded = self._build_collapsible_section_header(
+                self._store_category_expanded, category, f"🏷️ {category} ({len(apps)})"
+            )
+            self.cards_layout.addWidget(header, row, 0, 1, columns)
+            row += 1
+
+            col = 0
+            for software in (apps if expanded else []):
+                seq += 1
+                card = self._build_store_card(software, row_class, sequence_number=seq if numbered else None)
+                self.cards_layout.addWidget(card, row, col)
+                col += 1
+                if col >= columns:
+                    col = 0
+                    row += 1
+            if col != 0:
+                row += 1
+
+        return row
+
+    def _build_collapsible_section_header(self, state_dict, key, title):
+        """Build a collapsible section header row: title on the left, a
+        "Click to hide/show" hint + chevron on the right. *state_dict* is
+        whichever per-page expand/collapse dict owns *key* (e.g.
+        self._favourites_section_expanded for "installed"/"store", or
+        self._store_category_expanded for a Flow.txt cluster name) --
+        generic so both the Favourites and Store pages can reuse the same
+        collapsible-section look. Returns (header_widget, expanded).
+        """
+        expanded = state_dict.get(key, True)
 
         header = QWidget()
         header_layout = QHBoxLayout(header)
@@ -1643,7 +1818,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(toggle_btn)
 
         def _on_toggle():
-            self._favourites_section_expanded[key] = not self._favourites_section_expanded.get(key, True)
+            state_dict[key] = not state_dict.get(key, True)
             self._display_current_page()
 
         hint_label.clicked.connect(_on_toggle)
@@ -1736,8 +1911,8 @@ class MainWindow(QMainWindow):
 
         row = 0
         if installed_entries:
-            header, expanded = self._build_favourites_section_header(
-                "installed", f"⭐ Installed ({len(installed_entries)})"
+            header, expanded = self._build_collapsible_section_header(
+                self._favourites_section_expanded, "installed", f"⭐ Installed ({len(installed_entries)})"
             )
             self.cards_layout.addWidget(header, row, 0, 1, columns)
             row += 1
@@ -1778,8 +1953,8 @@ class MainWindow(QMainWindow):
                 row += 1
 
         if store_only_entries:
-            header, expanded = self._build_favourites_section_header(
-                "store", f"🏪 Available in Store ({len(store_only_entries)})"
+            header, expanded = self._build_collapsible_section_header(
+                self._favourites_section_expanded, "store", f"🏪 Available in Store ({len(store_only_entries)})"
             )
             self.cards_layout.addWidget(header, row, 0, 1, columns)
             row += 1
@@ -3159,6 +3334,9 @@ class MainWindow(QMainWindow):
             'folder_id': folder_id,
             'guide_available': self._find_store_guide_path(folder) is not None,
             'readme_available': self._find_store_readme_path(folder) is not None,
+            # No [Category] section, or no cluster= value -- falls into the
+            # same MISC catch-all bucket used for the explicit MISC cluster.
+            'category': self._find_store_category(folder) or STORE_CATEGORY_LAST,
         }
 
     def _load_store_software(self):
@@ -3271,6 +3449,40 @@ class MainWindow(QMainWindow):
 
         candidate = folder / guide_filename
         return candidate if candidate.exists() else None
+
+    def _find_store_category(self, folder: Path):
+        """Read Flow.txt's [Category] cluster= value for *folder*. Returns
+        the category name, or None if Flow.txt has no [Category] section
+        (or no cluster= value) -- callers should fall back to the MISC
+        catch-all bucket (STORE_CATEGORY_LAST) rather than treat None as a
+        parse failure.
+        """
+        flow_txt = folder / "Flow.txt"
+        if not flow_txt.exists():
+            return None
+
+        cluster = None
+        current_section = None
+        try:
+            with open(flow_txt, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('[') and line.endswith(']'):
+                        current_section = line[1:-1].lower()
+                        continue
+                    if current_section == 'category' and '=' in line:
+                        key, _, value = line.partition('=')
+                        if key.strip().lower() == 'cluster':
+                            v = value.strip()
+                            if v:
+                                cluster = v
+                            break
+        except Exception as e:
+            print(f"[CATEGORY] Error reading Flow.txt for {folder.name}: {e}")
+
+        return cluster
 
     def _find_store_readme_path(self, folder: Path):
         """Resolve the Store 'ReadMe' file for *folder* (Flow.txt [ReadMe]

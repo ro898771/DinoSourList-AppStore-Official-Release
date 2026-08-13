@@ -2,6 +2,7 @@
 
 - Add Favourite Tab
 - Add Setting for Refresh to speed up the refresh processing time
+- Categorize the Software Application due to large volume Application been deploy
 
 
 ## 💡 What is Dinosaur-List? 
