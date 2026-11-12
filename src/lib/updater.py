@@ -307,4 +307,6 @@ def restart(run_install: bool) -> None:
     # A console window only while dependencies are being installed (so the user can see it work); otherwise none at all.
     flags = (getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if run_install and (APP_ROOT / INSTALL_CMD).exists()
              else getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    subprocess.Popen(["cmd.exe", "/c", " & ".join(steps)], cwd=str(APP_ROOT), creationflags=flags)
+    # The command line is passed as ONE string, wrapped in quotes the way cmd /c expects. As a list, Python escapes the
+    # inner quotes as \" - which cmd does not understand ("'\"C:\\...\\env-Init.cmd\"' is not recognized").
+    subprocess.Popen(f'cmd.exe /c "{" & ".join(steps)}"', cwd=str(APP_ROOT), creationflags=flags)
