@@ -84,12 +84,17 @@ def main():
         app_log.log(f"GitHub update source: {updater.repo()} ({updater.branch()})  ·  installed version: {updater.shorten(updater.read_local_sha())}")
     # Start the persistent Box helper and its login right away: it overlaps with building the UI, so the first
     # refresh/download does not wait for it.
-    try:        # an old launcher (the one that opens runtime.exe's black prompt) is replaced by the new one after this run
-        scheduled = updater.sync_launchers()
-        if scheduled:
-            app_log.log(f"Launcher scripts out of date ({', '.join(scheduled)}) - they are replaced when this run ends")
-    except Exception as exc:
-        app_log.log(f"Launcher check failed: {exc}")
+    def _check_launchers():
+        """An old launcher (the one that opens runtime.exe's black prompt) is replaced by the new one after this run."""
+        try:
+            if not list((_REPO_ROOT / updater.LAUNCHER_DIR).glob("*.cmd")) and not updater.disabled():
+                app_log.log(f"launcher/ folder missing - fetching the launcher scripts from GitHub ({updater.fetch_launchers()} file(s))")
+            scheduled = updater.sync_launchers()
+            if scheduled:
+                app_log.log(f"Launcher scripts out of date ({', '.join(scheduled)}) - they are replaced when this run ends")
+        except Exception as exc:
+            app_log.log(f"Launcher check failed: {exc}")
+    threading.Thread(target=_check_launchers, daemon=True, name="LauncherSync").start()
     BoxLinkAPI.warm_up()
 
     def _log_box_ready():

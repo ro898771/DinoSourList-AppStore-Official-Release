@@ -345,6 +345,32 @@ def _launcher_pids() -> List[int]:
     return ids
 
 
+def fetch_launchers(timeout: float = 8) -> int:
+    """The launcher/ folder is missing here: the update that brought this code did not copy it (the old runtime.exe only
+    knows the files it was built for). Fetch the launcher scripts straight from GitHub so they can still be swapped in.
+    Returns how many files were fetched."""
+    data = _get_json(f"https://api.github.com/repos/{repo()}/contents/{LAUNCHER_DIR}?ref={branch()}", timeout)
+    if not isinstance(data, list):
+        return 0
+    dest = APP_ROOT / LAUNCHER_DIR
+    fetched = 0
+    for entry in data:
+        name = str(entry.get("name", ""))
+        if entry.get("type") != "file" or not name.lower().endswith(".cmd") or not entry.get("url"):
+            continue
+        try:
+            headers = _headers()
+            headers["Accept"] = "application/vnd.github.raw"
+            resp = requests.get(entry["url"], headers=headers, timeout=timeout)
+            if resp.ok and resp.content:
+                dest.mkdir(exist_ok=True)
+                (dest / name).write_bytes(resp.content)
+                fetched += 1
+        except (requests.RequestException, OSError):
+            continue
+    return fetched
+
+
 def _same_text(a: Path, b: Path) -> bool:
     try:
         crlf, lf = bytes([13, 10]), bytes([10])
