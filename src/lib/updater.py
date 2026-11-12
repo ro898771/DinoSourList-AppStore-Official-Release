@@ -292,21 +292,62 @@ def venv_missing() -> bool:
 
 # ── restart ──────────────────────────────────────────────────────────────────────
 
+_DEPS_WINDOW_PS1 = r"""
+param([string]$Flag)
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$f = New-Object System.Windows.Forms.Form
+$f.Text = 'Dinosaur-List'
+$f.StartPosition = 'CenterScreen'; $f.FormBorderStyle = 'FixedDialog'; $f.ControlBox = $false; $f.TopMost = $true
+$f.ClientSize = New-Object System.Drawing.Size(460, 130); $f.BackColor = [System.Drawing.Color]::White
+$t = New-Object System.Windows.Forms.Label
+$t.Text = 'Updating dependencies...'; $t.Font = New-Object System.Drawing.Font('Segoe UI', 13, [System.Drawing.FontStyle]::Bold)
+$t.Location = New-Object System.Drawing.Point(24, 18); $t.Size = New-Object System.Drawing.Size(410, 30); $t.ForeColor = [System.Drawing.Color]::Black
+$d = New-Object System.Windows.Forms.Label
+$d.Text = 'This takes a moment. Dinosaur-List opens by itself when it is done.'
+$d.Font = New-Object System.Drawing.Font('Segoe UI', 9.5); $d.ForeColor = [System.Drawing.Color]::FromArgb(75, 85, 99)
+$d.Location = New-Object System.Drawing.Point(24, 52); $d.Size = New-Object System.Drawing.Size(410, 22)
+$p = New-Object System.Windows.Forms.ProgressBar
+$p.Style = 'Marquee'; $p.MarqueeAnimationSpeed = 30
+$p.Location = New-Object System.Drawing.Point(24, 88); $p.Size = New-Object System.Drawing.Size(410, 10)
+$f.Controls.AddRange(@($t, $d, $p))
+$deadline = (Get-Date).AddMinutes(20)
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 500
+$timer.Add_Tick({ if (-not (Test-Path -LiteralPath $Flag) -or (Get-Date) -gt $deadline) { $f.Close() } })
+$timer.Start()
+[void]$f.ShowDialog()
+"""
+
+
 def restart(run_install: bool) -> None:
-    """Starts the app again in a new console after this process has exited, then the caller should quit.
-    With *run_install* env-Init.cmd runs first (new/changed dependencies); it cannot run inside this process because the
-    packages in use (Qt DLLs) are locked while we are alive."""
+    """Starts the app again after this process has exited, then the caller should quit. No black terminal, ever.
+    With *run_install* env-Init.cmd runs first (new/changed dependencies) in a HIDDEN console, with its output in
+    Log_data/env_init.log, while a small progress window ("Updating dependencies...") tells the user what is going on.
+    It cannot run inside this process because the packages in use (Qt DLLs) are locked while we are alive."""
     main_script = Path(sys.argv[0]).resolve()
     pythonw = Path(sys.executable).with_name("pythonw.exe")
-    exe = pythonw if pythonw.exists() else Path(sys.executable)        # no terminal window for the app itself
+    exe = pythonw if pythonw.exists() else Path(sys.executable)
     launch = f'start "" "{exe}" "{main_script}"'
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     steps = ["ping -n 3 127.0.0.1 >nul"]            # a couple of seconds: lets this process exit and release its files
     if run_install and (APP_ROOT / INSTALL_CMD).exists():
-        steps.append(f'echo Updating dependencies... & call "{APP_ROOT / INSTALL_CMD}"')
+        log = APP_ROOT / "Log_data" / "env_init.log"
+        flag = Path(tempfile.gettempdir()) / "dinosaurlist-deps.running"
+        try:
+            log.parent.mkdir(exist_ok=True)
+            flag.write_text("running", encoding="utf-8")
+            script = Path(tempfile.gettempdir()) / "dinosaurlist-deps-window.ps1"
+            script.write_text(_DEPS_WINDOW_PS1, encoding="utf-8")
+            subprocess.Popen(["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                              "-WindowStyle", "Hidden", "-File", str(script), "-Flag", str(flag)],
+                             creationflags=no_window, stdin=subprocess.DEVNULL, close_fds=True)
+            steps.append(f'call "{APP_ROOT / INSTALL_CMD}" > "{log}" 2>&1')
+            steps.append(f'del "{flag}"')
+        except OSError:                              # no progress window possible: still install, silently
+            steps.append(f'call "{APP_ROOT / INSTALL_CMD}"')
     steps.append(launch)
-    # A console window only while dependencies are being installed (so the user can see it work); otherwise none at all.
-    flags = (getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if run_install and (APP_ROOT / INSTALL_CMD).exists()
-             else getattr(subprocess, "CREATE_NO_WINDOW", 0))
     # The command line is passed as ONE string, wrapped in quotes the way cmd /c expects. As a list, Python escapes the
-    # inner quotes as \" - which cmd does not understand ("'\"C:\\...\\env-Init.cmd\"' is not recognized").
-    subprocess.Popen(f'cmd.exe /c "{" & ".join(steps)}"', cwd=str(APP_ROOT), creationflags=flags)
+    # inner quotes as \" - which cmd does not understand ("'\"C:\...\env-Init.cmd\"' is not recognized").
+    subprocess.Popen(f'cmd.exe /c "{" & ".join(steps)}"', cwd=str(APP_ROOT), creationflags=no_window)
