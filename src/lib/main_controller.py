@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                 QLineEdit, QComboBox, QFrame, QTextEdit,
                                 QSpacerItem, QSizePolicy, QCheckBox)
 from PySide6.QtCore import (Qt, QUrl, Signal, QObject, QTimer, QSize, QPointF,
-                             QVariantAnimation, QEasingCurve)
+                             QVariantAnimation, QEasingCurve, QEventLoop, QMetaObject)
 from PySide6.QtGui import QFont, QMovie, QTextCursor, QPixmap, QPainter, QPen, QColor, QIcon
 
 # Try to import WebEngineView for embedded browser
@@ -41,6 +41,9 @@ from .workers import (
     DownloadInstallWorker, DeleteWorker, TargetedRefreshWorker, NewAppsScanWorker,
 )
 from .readme_viewer import ReadmeViewer
+from .news_editor import NewsEditor
+from .progress_log_window import ProgressLogWindow
+from . import docs
 from .settings_dialog import SettingsDialog
 from .styles import (
     MAIN_WINDOW_STYLE, TITLE_STYLE, REFRESH_BUTTON_STYLE,
@@ -108,12 +111,21 @@ class _LLMWorker(QObject):
     def do_init(self):
         try:
             from .LLMController import DinosaurVectorBot
+            self._fetch_readmes()
             self.assistant = DinosaurVectorBot()   # paths auto-resolved to App_Store/
             self.assistant.load_and_index()        # build TF-IDF index from App_Store READMEs
             self._ready = True
             self.init_done.emit()
         except Exception as exc:
             self.error.emit(f"Initialisation failed: {exc}")
+
+    @staticmethod
+    def _fetch_readmes():
+        """Refresh only downloads icons + Flow.txt; the assistant indexes READMEs, so pull the missing/outdated ones now."""
+        try:
+            docs.fetch_missing_readmes(Path(__file__).parent.parent.parent / "App_Store")
+        except Exception as exc:
+            print(f"[AI] README fetch skipped: {exc}")
 
     def do_query(self, user_query: str):
         try:
@@ -128,6 +140,7 @@ class _LLMWorker(QObject):
     def do_reload(self):
         """Re-scan App_Store READMEs and rebuild the TF-IDF index."""
         try:
+            self._fetch_readmes()
             self.assistant.reload_and_index()
             count = len(self.assistant.chunks)
             self.reload_done.emit(f"Re-indexed {count} tool(s) from App_Store.")
@@ -449,8 +462,11 @@ class MainWindow(QMainWindow):
         _initial_store_data = self._load_store_software()
         self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(_initial_store_data)}")
         self.sidebar_category_count_label.setText(f"🏷️  Software Categories: {self._count_store_categories(_initial_store_data)}")
-        self._sync_installed_tools("launch")
-        self._register_app_user()
+        # Telemetry is several HTTP calls (5 s timeout each) -- never let it hold up the first frame.
+        def _launch_telemetry():
+            self._sync_installed_tools("launch")
+            self._register_app_user()
+        Thread(target=_launch_telemetry, daemon=True, name="LaunchTelemetry").start()
         # Apply correct visibility and placeholder for the initial page
         self._update_refresh_button_visibility()
         # Set the Refresh button's initial alignment gap (resizeEvent handles
@@ -1177,6 +1193,18 @@ class MainWindow(QMainWindow):
             movie_size = size - 12  # keep the same ~6px padding around the gif as before
             self._sidebar_ai_movie.setScaledSize(QSize(movie_size, movie_size))
 
+    def _start_revert(self, sha):
+        """Settings > Revert Version: go back to an earlier version from GitHub (the app restarts)."""
+        from .update_dashboard import UpdateDashboard
+        dashboard = UpdateDashboard()
+        dashboard.center_on_screen()
+        dashboard.show()
+        outcome = dashboard.revert(sha)
+        if outcome.restarting:
+            QApplication.instance().quit()      # the new copy starts by itself
+        else:
+            dashboard.fade_out()
+
     def _toggle_sidebar(self):
         """Collapse the sidebar to an icon-only rail, or expand it back, with
         a smooth width animation instead of an instant snap.
@@ -1448,13 +1476,54 @@ class MainWindow(QMainWindow):
         self._status_owner_token += 1
         return self._status_owner_token
 
+    # ── Store page cache ─────────────────────────────────────────────────────────
+    # Building the Store page (27+ cards, each with icon/version/button widgets) and laying it out is what made the tab hang
+    # on every click. The finished page is kept instead: leaving the tab only hides its widgets, coming back puts them
+    # straight into the grid. It is rebuilt when the data, view mode, category filter, collapsed sections or column count
+    # change (the key below), or when something retires it (_drop_store_cache).
+
+    @property
+    def _store_data_cache(self):
+        return getattr(self, "_store_data_cache_value", None)
+
+    @_store_data_cache.setter
+    def _store_data_cache(self, value):
+        self._store_data_cache_value = value
+        if value is None:
+            self._drop_store_cache()      # "stale" also means the cached page built from it is stale
+
+    def _drop_store_cache(self):
+        """Retire the cached Store page. Its widgets are deleted at the next page display -- never right here, because
+        they may be on screen at this very moment (the visible cards must stay usable until the page is rebuilt)."""
+        cache = getattr(self, "_store_page_cache", None)
+        if cache:
+            self._stale_widgets = getattr(self, "_stale_widgets", []) + [pl[0] for pl in cache["placements"]]
+        self._store_page_cache = None
+        self._store_view_cached = False
+
+    def _store_cache_key(self, columns):
+        return (self._list_view_enabled, self._store_category_filter, columns,
+                tuple(sorted(self._store_category_expanded.items())), id(self._store_data_cache))
+
     def _display_current_page(self):
         """Display content for the current page"""
-        # Clear existing cards
+        # Clear existing cards. The cached Store page is only detached and hidden, everything else is deleted.
+        keep = getattr(self, "_store_view_cached", False)
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                if keep:
+                    widget.hide()
+                else:
+                    widget.deleteLater()
+        self._store_view_cached = False
+        for widget in getattr(self, "_stale_widgets", []):
+            try:
+                widget.deleteLater()
+            except RuntimeError:
+                pass                                  # already gone
+        self._stale_widgets = []
 
         # Reset column stretches from previous news page
         for col in range(4):
@@ -1546,6 +1615,7 @@ class MainWindow(QMainWindow):
                 folder_name=app_store_folder_name,
                 folder_id=dash_folder_id,
                 readme_available=self._dashboard_readme_exists(folder),
+                readme_pending=self._dashboard_readme_pending(folder),
                 exec_valid=bool(software_data.get('exec_path')),
                 is_favourite=self._is_favourite(app_store_folder_name),
                 **extra_kwargs,
@@ -1630,8 +1700,6 @@ class MainWindow(QMainWindow):
             self.sidebar_category_count_label.setText("🏷️  Software Categories: 0")
             return
         
-        self.store_card_references = {}  # folder_name → StoreCard
-
         # Category filter narrows what actually gets laid out below; the
         # sidebar counts above stay based on the full, unfiltered store_data
         # since they describe overall inventory, not the current view.
@@ -1647,7 +1715,28 @@ class MainWindow(QMainWindow):
         # bar still has something to number rows by.
         row_class = StoreListRow if self._list_view_enabled else StoreCard
         columns = 1 if self._list_view_enabled else self._current_card_columns()
-        final_row = self._layout_store_categories(display_data, row_class, columns)
+        key = self._store_cache_key(columns)
+        cache = getattr(self, "_store_page_cache", None)
+        if cache is not None and cache["key"] == key:
+            # Same page as last time: put the finished widgets straight back (no card construction, no style parsing).
+            for widget, r, c, rs, cs in cache["placements"]:
+                self.cards_layout.addWidget(widget, r, c, rs, cs)
+                widget.show()
+            self.store_card_references = cache["refs"]
+            final_row = cache["final_row"]
+        else:
+            self._drop_store_cache()
+            self.store_card_references = {}  # folder_name → StoreCard
+            final_row = self._layout_store_categories(display_data, row_class, columns)
+            placements = []
+            for i in range(self.cards_layout.count()):
+                widget = self.cards_layout.itemAt(i).widget()
+                if widget is not None:
+                    r, c, rs, cs = self.cards_layout.getItemPosition(i)
+                    placements.append((widget, r, c, rs, cs))
+            self._store_page_cache = {"key": key, "placements": placements,
+                                      "refs": self.store_card_references, "final_row": final_row}
+        self._store_view_cached = True
         self.cards_layout.setRowStretch(final_row, 1)
 
         self.sidebar_store_count_label.setText(f"🏪  Software Store: {len(store_data)}")
@@ -1723,6 +1812,8 @@ class MainWindow(QMainWindow):
             folder_id=software.get('folder_id', ''),
             guide_available=software.get('guide_available', True),
             readme_available=software.get('readme_available', True),
+            guide_pending=software.get('guide_pending', False),
+            readme_pending=software.get('readme_pending', False),
             is_favourite=self._is_favourite(software.get('folder_name', software['name'])),
             **extra_kwargs,
         )
@@ -1929,6 +2020,7 @@ class MainWindow(QMainWindow):
                     folder_name=app_store_folder_name,
                     folder_id=dash_folder_id,
                     readme_available=self._dashboard_readme_exists(folder),
+                    readme_pending=self._dashboard_readme_pending(folder),
                     exec_valid=bool(software_data.get('exec_path')),
                     is_favourite=True,
                 )
@@ -1970,6 +2062,8 @@ class MainWindow(QMainWindow):
                     folder_id=software.get('folder_id', ''),
                     guide_available=software.get('guide_available', True),
                     readme_available=software.get('readme_available', True),
+                    guide_pending=software.get('guide_pending', False),
+                    readme_pending=software.get('readme_pending', False),
                     is_favourite=True,
                 )
                 card.download_clicked.connect(self._on_store_download)
@@ -2223,31 +2317,14 @@ class MainWindow(QMainWindow):
         # consistent look across the app instead of the old flat grey page.
         full_html = self._build_doc_page_html(html_body, accent="#4338ca", tint="#eef0ff")
 
-        # ── QTextBrowser fills the outer wrapper ──────────────────────────────
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
-        browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        browser.setStyleSheet("""
-            QTextBrowser {
-                background-color: #ffffff;
-                border: none;
-            }
-            QScrollBar:vertical {
-                width: 10px;
-                background: #f1f2f6;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c7cad3;
-                border-radius: 5px;
-                min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover { background: #9498a6; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        """)
-        browser.setHtml(full_html)
-
-        outer_layout.addWidget(browser)
+        # ── Editable page: double-click the text to edit it; the edited copy lives in
+        #    config-record/news-edited.html and Reset brings back News/news.md ──────
+        editor = NewsEditor(
+            default_html=lambda: full_html,
+            file_path=self.config_path / "news-edited.html",
+            source_name="News/news.md",
+        )
+        outer_layout.addWidget(editor)
         self.cards_layout.addWidget(outer, 0, 0, 1, 4)
         if not self._is_busy:
             self.status_label.setText(
@@ -2339,6 +2416,47 @@ class MainWindow(QMainWindow):
         else:
             self._run_refresh_now()
 
+    # ── Refresh dashboard (separate progress + live log window) ─────────────────
+
+    def _open_progress(self, title, reuse=False):
+        """Open the progress/log window for a refresh (or keep using the running one when *reuse*)."""
+        plog = getattr(self, "_plog", None)
+        if reuse and plog is not None and not plog.finished_state:
+            return plog
+        try:
+            if plog is not None:
+                plog.close()
+        except RuntimeError:
+            pass                                  # already deleted
+        self._plog = ProgressLogWindow(self, title)
+        self._plog.show()
+        return self._plog
+
+    def _plog_call(self, method, *args):
+        """Call a ProgressLogWindow method if the window is still there (the user may have closed it)."""
+        plog = getattr(self, "_plog", None)
+        if plog is None:
+            return
+        try:
+            getattr(plog, method)(*args)
+        except RuntimeError:
+            self._plog = None
+
+    def _finish_progress(self, ok, message):
+        self._plog_call("finish", ok, message)
+
+    def _on_sync_progress(self, message):
+        """Per-step progress of the App_Store sync (refresh): status bar + dashboard log."""
+        self.status_label.setText(f"📝 {message}")
+        self._plog_call("log", message)
+
+    def _on_sync_percent(self, fraction):
+        self._plog_call("set_percent", fraction)
+        self._plog_call("set_phase_text",
+                        "Reading folder metadata…" if fraction < 0.05 else
+                        "Downloading Flow.txt configuration…" if fraction < 0.5 else
+                        "Downloading icons…" if fraction < 0.97 else "Syncing icons to installed apps…")
+
     def _run_refresh_now(self):
         """Refresh Setting #1: full refresh -- icon + README + Guide, all apps."""
         # Show loading indicator
@@ -2346,6 +2464,9 @@ class MainWindow(QMainWindow):
         self._begin_busy_status()
         token = self._claim_status_owner()
         self.status_label.setText("🔄 Refreshing data from Box (scanning folders recursively)...")
+        self._open_progress("Refreshing from Box")
+        self._plog_call("set_phase", "Scanning Box folders (recursive)…", None)
+        self._plog_call("log", "Scanning Box folders recursively…")
 
         # RefreshWorker has no per-item progress -- a large/nested Box folder
         # structure can sit on that one static line for a long time with
@@ -2433,6 +2554,8 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(
                     f"✓ Data refreshed! Now creating metadata files in App_Store..."
                 )
+                self._plog_call("log", f"Scan complete: {len(data.get('items', []))} app folders found.")
+                self._plog_call("set_phase", "Reading folder metadata…", 0.0)
                 
                 # Reload software data without changing the current page
                 self.load_software(reset_page=False)
@@ -2442,6 +2565,7 @@ class MainWindow(QMainWindow):
             else:
                 self.status_label.setText(f"⚠️ Refresh failed: {error}")
                 self._report_log(f"Refresh failed: {error}")
+                self._finish_progress(False, f"Refresh failed: {error}")
                 self.hide_loading()
                 self._end_busy_status()
                 if is_dotnet_missing_error(error):
@@ -2449,6 +2573,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_label.setText(f"⚠️ Error refreshing data: {str(e)}")
             self._report_log(f"Error refreshing data: {e}")
+            self._finish_progress(False, str(e))
             self.hide_loading()
             self._end_busy_status()
 
@@ -2458,7 +2583,8 @@ class MainWindow(QMainWindow):
         
         # Create worker
         worker = AppStoreDownloadWorker(data, app_store_path)
-        worker.progress.connect(self._on_download_progress)
+        worker.progress.connect(self._on_sync_progress)
+        worker.percent.connect(self._on_sync_percent)
         worker.finished.connect(self._on_download_complete)
         
         # Run in background thread
@@ -2544,6 +2670,7 @@ class MainWindow(QMainWindow):
                             f"✓ Complete! Created: {created} JSON files, Skipped: {skipped}, Failed: {failed}"
                         )
                 
+                self._finish_progress(True, message or f"Created {created} JSON files")
                 # Reload software data to update ComboBoxes and buttons (without changing page)
                 self.load_software(reset_page=False)
 
@@ -2556,9 +2683,11 @@ class MainWindow(QMainWindow):
             else:
                 self.status_label.setText(f"⚠️ Metadata creation failed: {message}")
                 self._report_log(f"Metadata creation failed: {message}")
+                self._finish_progress(False, f"Metadata creation failed: {message}")
         except Exception as e:
             self.status_label.setText(f"⚠️ Error: {str(e)}")
             self._report_log(f"Metadata creation error: {e}")
+            self._finish_progress(False, str(e))
         finally:
             # Hide loading indicator
             self.hide_loading()
@@ -2650,6 +2779,9 @@ class MainWindow(QMainWindow):
         else:
             self._favourites.discard(folder_name)
         self._save_favourites()
+        if self.current_page != 1:
+            self._drop_store_cache()       # a star changed somewhere else: the hidden Store cards are out of date
+                                           # (on the Store page itself the clicked card already shows it)
 
         if self.current_page == 2:
             self._display_current_page()
@@ -2670,6 +2802,7 @@ class MainWindow(QMainWindow):
         dialog.refresh_select_requested.connect(self._on_refresh_select_requested)
         dialog.refresh_no_readme_guide_requested.connect(self._on_refresh_no_readme_guide_requested)
         dialog.refresh_new_apps_requested.connect(self._on_refresh_new_apps_requested)
+        dialog.revert_requested.connect(self._start_revert)
         dialog.exec()
 
     def _on_refresh_now_requested(self):
@@ -2724,6 +2857,9 @@ class MainWindow(QMainWindow):
         label = "🔄 Refreshing (icon + metadata only, no README/Guide, all apps)"
         self.status_label.setText(f"{label}...")
         self._start_progress_heartbeat(token, label)
+        self._open_progress("Quick refresh from Box")
+        self._plog_call("set_phase", "Scanning Box folders (recursive)…", None)
+        self._plog_call("log", "Scanning Box folders recursively…")
 
         worker = RefreshWorker(None, self.config_path, self.record_file)
         self._settings_refresh_worker = worker
@@ -2740,6 +2876,7 @@ class MainWindow(QMainWindow):
         if not success:
             self.status_label.setText(f"⚠️ Refresh failed: {error}")
             self._report_log(f"Refresh (no readme/guide) failed: {error}")
+            self._finish_progress(False, f"Refresh failed: {error}")
             self.hide_loading()
             self._end_busy_status()
             if is_dotnet_missing_error(error):
@@ -2752,11 +2889,14 @@ class MainWindow(QMainWindow):
 
         self.load_software(reset_page=False)
         self.status_label.setText("📝 Downloading icons + metadata only (no README/Guide)...")
+        self._plog_call("log", f"Scan complete: {len(data.get('items', []))} app folders found.")
+        self._plog_call("set_phase", "Reading folder metadata…", 0.0)
 
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
         worker = AppStoreDownloadWorker(data, app_store_path, skip_readme_and_guide=True)
         self._settings_download_worker = worker
-        worker.progress.connect(self._on_download_progress)
+        worker.progress.connect(self._on_sync_progress)
+        worker.percent.connect(self._on_sync_percent)
         worker.finished.connect(self._on_download_complete)
         thread = Thread(target=worker.run, daemon=True)
         thread.start()
@@ -2777,6 +2917,8 @@ class MainWindow(QMainWindow):
         self._begin_busy_status()
         token = self._claim_status_owner()
         self.status_label.setText("🔍 Checking Box for new apps...")
+        self._open_progress("Checking Box for new apps")
+        self._plog_call("set_phase", "Looking for apps that are not in App_Store yet…", None)
         self._start_progress_heartbeat(token, "🔍 Checking Box for new apps")
 
         worker = NewAppsScanWorker(known_names)
@@ -2792,6 +2934,7 @@ class MainWindow(QMainWindow):
         if not success:
             self.status_label.setText(f"⚠️ Could not check Box for new apps: {error}")
             self._report_log(f"New-apps scan failed: {error}")
+            self._finish_progress(False, f"Could not check Box for new apps: {error}")
             self.hide_loading()
             self._end_busy_status()
             if is_dotnet_missing_error(error):
@@ -2800,6 +2943,7 @@ class MainWindow(QMainWindow):
 
         if not new_targets:
             self.status_label.setText("✓ No new apps found in Box -- everything is already onboarded.")
+            self._finish_progress(True, "No new apps found in Box -- everything is already onboarded.")
             self.hide_loading()
             self._end_busy_status()
             return
@@ -2818,10 +2962,13 @@ class MainWindow(QMainWindow):
         token = self._claim_status_owner()
         self.status_label.setText(f"🔄 {label}...")
         self._start_progress_heartbeat(token, f"🔄 {label}")
+        self._open_progress(label, reuse=True)
+        self._plog_call("set_phase", "Scanning Box folders (recursive)…", None)
+        self._plog_call("log", label)
 
         worker = TargetedRefreshWorker(targets, self.config_path, self.record_file)
         self._targeted_refresh_worker = worker
-        worker.progress.connect(lambda msg: self._set_status_if_current(token, f"🔄 {msg}"))
+        worker.progress.connect(lambda msg: (self._set_status_if_current(token, f"🔄 {msg}"), self._plog_call("log", msg)))
         worker.finished.connect(self._on_targeted_scan_complete)
         thread = Thread(target=worker.run, daemon=True)
         thread.start()
@@ -2833,6 +2980,7 @@ class MainWindow(QMainWindow):
         if not success or not data or not data.get('items'):
             self.status_label.setText(f"⚠️ Refresh failed: {error or 'no apps scanned'}")
             self._report_log(f"Targeted refresh failed: {error}")
+            self._finish_progress(False, f"Refresh failed: {error or 'no apps scanned'}")
             self.hide_loading()
             self._end_busy_status()
             if error and is_dotnet_missing_error(error):
@@ -2846,11 +2994,14 @@ class MainWindow(QMainWindow):
 
         self.load_software(reset_page=False)
         self.status_label.setText(f"📝 Downloading assets for {len(data['items'])} app(s)...")
+        self._plog_call("log", f"Scan complete: {len(data['items'])} app(s).")
+        self._plog_call("set_phase", "Reading folder metadata…", 0.0)
 
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
         worker = AppStoreDownloadWorker(data, app_store_path)
         self._targeted_download_worker = worker
-        worker.progress.connect(self._on_download_progress)
+        worker.progress.connect(self._on_sync_progress)
+        worker.percent.connect(self._on_sync_percent)
         worker.finished.connect(self._on_targeted_download_complete)
         thread = Thread(target=worker.run, daemon=True)
         thread.start()
@@ -2865,12 +3016,14 @@ class MainWindow(QMainWindow):
 
         if success:
             self.status_label.setText(f"✓ Complete! {message}" if message else "✓ Complete!")
+            self._finish_progress(True, message or "Complete")
             self._store_data_cache = None
             self.load_software(reset_page=False)
             self._display_current_page()
         else:
             self.status_label.setText(f"⚠️ {message}")
             self._report_log(f"Targeted download incomplete: {message}")
+            self._finish_progress(False, str(message))
 
         self.hide_loading()
         self._end_busy_status()
@@ -3208,7 +3361,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             print(f"[TOOL-SYNC:{event_label}] FAILED: {exc}")
 
+    def _background(self, fn, *args):
+        """Run a network/telemetry call on a worker thread so the UI never waits for it."""
+        Thread(target=fn, args=args, daemon=True, name="Telemetry").start()
+
     def _report_log(self, log_content, level="ERROR"):
+        self._background(self._report_log_now, log_content, level)
+
+    def _report_log_now(self, log_content, level="ERROR"):
         """POST a timestamped line to the Telemetry API's Info/Logs feature (db4).
 
         Centralizes visibility into app errors instead of leaving them only in
@@ -3332,8 +3492,11 @@ class MainWindow(QMainWindow):
             'folder': folder,
             'folder_name': folder_name,
             'folder_id': folder_id,
-            'guide_available': self._find_store_guide_path(folder) is not None,
-            'readme_available': self._find_store_readme_path(folder) is not None,
+            'guide_available': docs.guide(folder).state != docs.NONE,
+            'readme_available': docs.readme(folder).state != docs.NONE,
+            # orange: listed on Box but not downloaded yet (or the downloaded copy is outdated)
+            'guide_pending': docs.guide(folder).state == docs.REMOTE,
+            'readme_pending': docs.readme(folder).state == docs.REMOTE,
             # No [Category] section, or no cluster= value -- falls into the
             # same MISC catch-all bucket used for the explicit MISC cluster.
             'category': self._find_store_category(folder) or STORE_CATEGORY_LAST,
@@ -3523,9 +3686,50 @@ class MainWindow(QMainWindow):
         fallback = folder / "README.md"
         return fallback if fallback.exists() else None
 
+    def _fetch_doc(self, info, store_folder, what):
+        """Return the local path of a README/guide, downloading it first when it is only listed on Box (or its copy
+        there is newer). The UI stays responsive while the download runs. None if there is nothing to open."""
+        if info.state == docs.LOCAL:
+            return info.local_path
+        if info.state != docs.REMOTE:
+            return None
+
+        result = {}
+        loop = QEventLoop(self)
+
+        def work():
+            try:
+                result['path'] = docs.download(info, store_folder)
+            except Exception as exc:
+                result['error'] = str(exc)
+            QMetaObject.invokeMethod(loop, "quit", Qt.QueuedConnection)
+
+        self.status_label.setText(f"⬇️ Downloading {what}…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            Thread(target=work, daemon=True).start()
+            loop.exec()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if 'path' in result:
+            self.status_label.setText(f"✓ {what} downloaded")
+            self._refresh_doc_buttons(Path(store_folder))
+            return result['path']
+        if info.local_path and Path(info.local_path).exists():
+            self.status_label.setText(f"⚠ Could not update {what} ({result.get('error')}) — showing the saved copy")
+            return info.local_path
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Download failed")
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setText(f"Could not download {what} from Box.\n\n{result.get('error', '')}")
+        msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
+        msg_box.exec()
+        return None
+
     def _on_store_guide_clicked(self, software_name):
         """Handle Details button click from store card.
-        Opens the guide file whose name is read from Flow.txt [Guide] file=."""
+        Opens the guide file whose name is read from Flow.txt [Guide] file= (downloaded on first use)."""
         import os
 
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
@@ -3535,8 +3739,9 @@ class MainWindow(QMainWindow):
         for folder in app_store_path.iterdir():
             if not folder.is_dir() or not folder.name.startswith(software_name):
                 continue
-            guide_path = self._find_store_guide_path(folder)
-            if guide_path:
+            info = docs.guide(folder)
+            if info.state != docs.NONE:
+                guide_path = self._fetch_doc(info, folder, f"guide for {software_name}")
                 break
 
         if guide_path:
@@ -3556,8 +3761,8 @@ class MainWindow(QMainWindow):
             msg_box.setIcon(QMessageBox.Information)
             msg_box.setText(
                 f"No guide found for {software_name}.\n\n"
-                f"Make sure Flow.txt has a [Guide] file= entry and the file has been downloaded.\n"
-                f"Click Refresh on Page 2 to download the latest files from Box."
+                f"Make sure Flow.txt has a [Guide] file= entry and the file exists on Box.\n"
+                f"Click Refresh on Page 2 to update the app list from Box."
             )
             msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
             msg_box.exec()
@@ -3567,9 +3772,10 @@ class MainWindow(QMainWindow):
 
         Opens the readme file (per Flow.txt [ReadMe] Flag=/file=, falling back
         to a bare README.md in the App_Store folder) in the same in-app
-        GitHub-style viewer used by the Dashboard's ReadMe button. Store items
-        may not be installed yet, so this only ever looks in App_Store --
-        there's no Software_Downloaded folder to fall back to here.
+        GitHub-style viewer used by the Dashboard's ReadMe button. It is
+        downloaded from Box the first time it is opened (or when Box has a
+        newer copy). Store items may not be installed yet, so this only ever
+        looks in App_Store.
         """
         app_store_path = Path(__file__).parent.parent.parent / "App_Store"
         readme_path = None
@@ -3578,10 +3784,12 @@ class MainWindow(QMainWindow):
         for folder in app_store_path.iterdir():
             if not folder.is_dir() or not folder.name.startswith(software_name):
                 continue
-            found = self._find_store_readme_path(folder)
-            if found:
-                readme_path = found
-                base_folder = folder
+            info = docs.readme(folder)
+            if info.state != docs.NONE:
+                found = self._fetch_doc(info, folder, f"README for {software_name}")
+                if found:
+                    readme_path = Path(found)
+                    base_folder = folder
                 break
 
         if readme_path and readme_path.exists():
@@ -3609,7 +3817,7 @@ class MainWindow(QMainWindow):
             msg_box.setText(
                 f"No README found for {software_name}.\n\n"
                 f"Make sure Flow.txt has a [ReadMe] section with Flag=True "
-                f"and the file has been downloaded via Refresh."
+                f"and the file exists on Box."
             )
             msg_box.setIcon(QMessageBox.Information)
             msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
@@ -3700,34 +3908,34 @@ class MainWindow(QMainWindow):
         if card:
             card.set_refreshing(False)
 
-        # Reload only this card's data (icon + versions) without rebuilding the whole page
-        app_store_path = Path(__file__).parent.parent.parent / "App_Store"
-        folder_path = app_store_path / folder_name
+        if success:
+            self._after_single_refresh(folder_name)
 
-        if card and folder_path.exists():
-            # Refresh icon — directly use the stored icon_label reference on the card
-            new_icon = self._resolve_app_store_icon(folder_path)
-            if new_icon and new_icon.exists() and hasattr(card, 'icon_label'):
-                from PySide6.QtGui import QIcon
-                icon = QIcon(str(new_icon))
-                sizes = icon.availableSizes()
-                if sizes:
-                    largest = max(sizes, key=lambda s: s.width() * s.height())
-                    pixmap = icon.pixmap(largest)
-                    if pixmap and not pixmap.isNull():
-                        scaled = pixmap.scaled(90, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        card.icon_label.setPixmap(scaled)
+    def _after_single_refresh(self, folder_name):
+        """One app was just re-synced from Box (icon, Flow.txt, version list on disk are new): make EVERY view show it
+        right away -- grid or list, categories, Favourites, and the Store page the next time it is opened.
 
-            # Refresh the versions combo by reloading the JSON
-            json_path = folder_path / f"{folder_name}.json"
-            if json_path.exists():
-                card.json_path = json_path
-                card.versions_data.clear()
-                card._load_versions()
-                if hasattr(card, 'version_combo'):
-                    card.version_combo.clear()
-                    for version, file_id in card.versions_data:
-                        card.version_combo.addItem(version, file_id)
+        Patching the one card in place only worked for the plain grid, and only when it already had a version drop-down
+        and an icon label; a new version on an app that had none, a changed category, or an icon in List View were only
+        picked up after restarting the app. So: rebuild this app's Store entry from disk, retire the cached page that was
+        built from the old one, and redraw the page if it is on screen (same scroll position)."""
+        folder = Path(__file__).parent.parent.parent / "App_Store" / folder_name
+        cache = self._store_data_cache
+        if cache is not None and folder.is_dir():
+            entry = self._build_store_entry(folder)
+            for i, old in enumerate(cache):
+                if old.get('folder_name') == folder_name:
+                    cache[i] = entry
+                    break
+            else:
+                cache.append(entry)
+                cache.sort(key=lambda e: e['folder'])
+        self._drop_store_cache()
+        if self.current_page in (1, 2):                      # Software Store / Favourites show these cards
+            bar = self.cards_scroll_area.verticalScrollBar()
+            keep = bar.value()
+            self._display_current_page()
+            QTimer.singleShot(0, lambda: bar.setValue(keep))
 
     def _update_record_json(self, item):
         """Update the entry for a single app in record.json with fresh Box data."""
@@ -3850,6 +4058,9 @@ class MainWindow(QMainWindow):
             is_latest = card._check_version_status()
             card.update_version_status(is_latest)
 
+        if success:
+            self._after_single_refresh(folder_name)      # the Store/Favourites views must follow, too
+
     def _start_download(self, software_name, author_name, version, file_id, from_page1=False, is_update=False):
         """Common download logic for both Page 1 (Update) and Page 2 (Store) downloads"""
         # Confirm download with appropriate message
@@ -3919,8 +4130,10 @@ class MainWindow(QMainWindow):
             # recorded as tool usage. Covers all three trigger points (Store tab's
             # Download button, Dashboard's Update/Latest button) since they all funnel
             # through this same completion handler.
-            self._report_tool_checkin(self.download_worker.software_name, self.download_worker.version)
-            self._update_tool_list_entry(self.download_worker.software_name, self.download_worker.version)
+            # These are HTTP calls (5 s timeout each): on the UI thread they froze the window right as the download finished.
+            name, version = self.download_worker.software_name, self.download_worker.version
+            self._background(lambda: (self._report_tool_checkin(name, version),
+                                      self._update_tool_list_entry(name, version)))
 
             # Auto-refresh software data to show newly installed software (without changing page)
             self.load_software(reset_page=False)
@@ -4118,7 +4331,7 @@ class MainWindow(QMainWindow):
             # nothing visibly changing. Clean it up immediately instead.
             print(f"[DELETE] Folder already missing on disk — removing stale card: {folder}")
             self._remove_dashboard_card(str(folder))
-            self._sync_installed_tools("delete")
+            self._background(self._sync_installed_tools, "delete")
             return
 
         msg_box = QMessageBox(self)
@@ -4233,7 +4446,7 @@ class MainWindow(QMainWindow):
         # UserToolsClient has no "remove one key" call, so a full re-scan + POST
         # replace is how a deletion gets reflected server-side. Run unconditionally
         # (not just on success) since the folder is confirmed gone either way.
-        self._sync_installed_tools("delete")
+        self._background(self._sync_installed_tools, "delete")
 
     def _remove_dashboard_card(self, folder_path_str):
         """Remove a single card from the Dashboard grid without a full re-scan.
@@ -4389,34 +4602,79 @@ class MainWindow(QMainWindow):
 
         return None, None
 
+    def _installed_readme_doc(self, sw_folder: Path):
+        """(DocInfo, store_folder) for an installed app's README: the App_Store copy, else the app's own README.md,
+        else the Box copy (not downloaded yet / out of date)."""
+        from .folder_parser import parse_software_folder_name, format_software_name, get_author_raw
+
+        parsed = parse_software_folder_name(sw_folder.name)
+        store_dir = self.software_path.parent / "App_Store" / f"{format_software_name(parsed)}-{get_author_raw(parsed)}"
+        info = docs.readme(store_dir) if store_dir.is_dir() else docs.MISSING
+        if info.state == docs.LOCAL:
+            return info, store_dir
+        if info.state == docs.REMOTE and info.local_path:
+            return info, store_dir          # downloaded copy is out of date -> offer the new one
+        own = sw_folder / "README.md"
+        if own.exists():
+            return docs.DocInfo(docs.LOCAL, "README.md", None, own), sw_folder
+        return info, store_dir
+
+    def _dashboard_readme_pending(self, folder: Path) -> bool:
+        """True when this app's README is on Box but not downloaded yet / outdated (its button shows orange)."""
+        info, _ = self._installed_readme_doc(folder)
+        return info.state == docs.REMOTE
+
+    def _refresh_doc_buttons(self, store_folder: Path):
+        """A README/guide was just downloaded: put the matching buttons (Store card and any installed card of the same
+        app) back to their normal colour. Cached Store data is dropped so a rebuilt page does not show stale orange."""
+        from .styles import mark_doc_pending, mark_doc_ready
+        for entry in (self._store_data_cache or []):          # keep the cached Store data (and page) valid
+            if entry.get('folder_name') == store_folder.name:
+                entry['guide_pending'] = docs.guide(store_folder).state == docs.REMOTE
+                entry['readme_pending'] = docs.readme(store_folder).state == docs.REMOTE
+
+        def paint(label, info, kind):
+            try:
+                if label is None or info.state == docs.NONE:
+                    return
+                (mark_doc_pending if info.state == docs.REMOTE else mark_doc_ready)(label, kind)
+            except RuntimeError:
+                pass        # the card was already rebuilt/deleted
+
+        card = self.store_card_references.get(store_folder.name)
+        if card is not None:
+            paint(getattr(card, 'guide_label', None), docs.guide(store_folder), 'guide')
+            paint(getattr(card, 'readme_label', None), docs.readme(store_folder), 'readme')
+        for sw_path, dash_card in list(self.card_references.items()):
+            try:
+                info, base = self._installed_readme_doc(Path(sw_path))
+            except Exception:
+                continue
+            if Path(base) == store_folder:
+                paint(getattr(dash_card, 'readme_label', None), info, 'readme')
+
     def _dashboard_readme_exists(self, folder: Path) -> bool:
-        """True if show_readme() would find a README for *folder* -- used to
-        grey out the Dashboard ReadMe button upfront instead of only failing
-        after the click.
+        """True if show_readme() would find a README for *folder* (local, or listed on Box) -- used to
+        grey out the Dashboard ReadMe button upfront instead of only failing after the click.
         """
-        readme_path, _ = self._find_app_store_readme(folder)
-        if readme_path is None:
-            readme_path = folder / "README.md"
-        return readme_path.exists()
+        info, _ = self._installed_readme_doc(folder)
+        return info.state != docs.NONE
 
     def show_readme(self, folder_path):
         """Show README content in GitHub-style viewer (triggered by ReadMe button).
 
         Priority:
-          1. App_Store/<name>/Flow.txt [ReadMe] Flag=True → open that file from App_Store
+          1. App_Store/<name>/ README (Flow.txt [ReadMe]) -- downloaded from Box on first use / when updated
           2. Fallback: README.md inside the Software_Downloaded folder
         """
         folder = Path(folder_path)
-
-        # Try App_Store first (new behaviour)
-        readme_path, base_folder = self._find_app_store_readme(folder)
-
-        # Fallback: README.md in the Software_Downloaded folder
-        if readme_path is None:
-            candidate = folder / "README.md"
-            if candidate.exists():
-                readme_path = candidate
-                base_folder = folder
+        info, base_folder = self._installed_readme_doc(folder)
+        readme_path = None
+        if info.state != docs.NONE:
+            found = self._fetch_doc(info, base_folder, f"README for {folder.name}")
+            readme_path = Path(found) if found else None
+            if readme_path is None:
+                return          # download failed and the user has already been told
 
         if readme_path and readme_path.exists():
             try:
@@ -4443,7 +4701,7 @@ class MainWindow(QMainWindow):
             msg_box.setText(
                 f"No README found for {folder.name}.\n\n"
                 f"Make sure Flow.txt has a [ReadMe] section with Flag=True "
-                f"and the file has been downloaded via Refresh."
+                f"and the file exists on Box."
             )
             msg_box.setIcon(QMessageBox.Information)
             msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
@@ -4548,7 +4806,11 @@ class MainWindow(QMainWindow):
         reply = msg_box.exec()
         
         if reply == QMessageBox.Yes:
-            self._sync_installed_tools("close")
+            # The exit telemetry is an HTTP call (up to 5 s): the window must disappear NOW, not after it. A non-daemon
+            # thread lets the process finish the upload invisibly instead of cutting it off.
+            self.hide()
+            QApplication.processEvents()
+            Thread(target=self._sync_installed_tools, args=("close",), name="CloseTelemetry").start()
             event.accept()
         else:
             event.ignore()

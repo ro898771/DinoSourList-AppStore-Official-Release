@@ -1,12 +1,8 @@
 {
   "user_name": "ro898771",
   "tool_list": {
-    "PADMA": "1.2.0.0",
-    "QuickMi2e": "9.0.0.0",
-    "BandMaster": "1.0.0.3",
-    "Data Mapping": "1.0.0.0",
-    "Dinosaur-List": "1.0.0.4",
-    "GU Validation": "1.0.0.0",
-    "Module Power Tools": "v1.2.0.0"
+    "#Claude MD": "1.0.0.0",
+    "Split Spread": "3.0.0.0",
+    "Dinosaur-List": "4.0.0.0"
   }
 }

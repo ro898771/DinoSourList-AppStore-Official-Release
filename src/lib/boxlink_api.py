@@ -2,10 +2,13 @@
 BoxLink API - Interface for calling BoxAutomate.exe
 """
 
+import os
 import subprocess
 import re
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List, Any
+
+from .box_daemon import BoxDaemon
 
 # Shown to the user when BoxAutomate.exe cannot launch because the required
 # .NET runtime is missing on the machine.
@@ -48,8 +51,30 @@ class BoxLinkAPI:
         else:
             self.exe_path = Path(exe_path)
         
-        if not self.exe_path.exists():
+        # BoxFast.exe (persistent helper, see box_daemon.py) is tried first; BoxAutomate.exe stays as the fallback.
+        self._daemon = BoxDaemon.instance()
+
+        if not self.exe_path.exists() and not self._daemon.exe_exists():
             raise FileNotFoundError(f"BoxAutomate.exe not found at: {self.exe_path}")
+
+    @staticmethod
+    def warm_up():
+        """Start BoxFast.exe and log in to Box in the background (call once at app start)."""
+        if BoxDaemon.exe_exists():
+            BoxDaemon.instance().warm_up()
+
+    @staticmethod
+    def fast_available() -> bool:
+        """True when the persistent BoxFast helper is actually running (lets callers size their thread pools up;
+        waits for the start-up already kicked off by warm_up() instead of guessing)."""
+        d = BoxDaemon.instance()
+        return d.available() and d.ready()
+
+    def _fast(self, cmd: str, timeout: Optional[float] = 120, **fields) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """One BoxFast request; (False, None, why) if the helper is unavailable or the call failed."""
+        if not self._daemon.available():
+            return False, None, "BoxFast helper unavailable"
+        return self._daemon.request(cmd, timeout=timeout, **fields)
     
     def call_command(self, command: str, *args, timeout: Optional[int] = 30) -> Tuple[bool, str, str]:
         """
@@ -244,6 +269,10 @@ class BoxLinkAPI:
                 for item in data['items']:
                     print(f"  - {item['name']} ({item['type']})")
         """
+        ok, data, _ = self._fast('getInfoDefault')
+        if ok:
+            return True, data, ""
+
         success, output, error = self.call_command('getInfoDefault')
         
         if not success:
@@ -287,6 +316,10 @@ class BoxLinkAPI:
                 for item in data['items']:
                     print(f"  - {item['name']} ({item['type']})")
         """
+        ok, data, _ = self._fast('getInfo', folderId=folder_id)
+        if ok:
+            return True, data, ""
+
         success, output, error = self.call_command('getInfo', folder_id)
         
         if not success:
@@ -436,6 +469,10 @@ class BoxLinkAPI:
                 for item in data['items']:
                     print(f"  - {item['name']} ({item['type']})")
         """
+        ok, data, _ = self._fast('list', folderId=folder_id)
+        if ok:
+            return True, data, ""
+
         success, output, error = self.call_command('list', folder_id)
         
         if not success:
@@ -554,7 +591,8 @@ class BoxLinkAPI:
         """
         return self.call_command('download', file_id, destination_path, timeout=None)
     
-    def download_dict(self, file_id: str, destination_path: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    def download_dict(self, file_id: str, destination_path: str,
+                      on_progress=None) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         r"""
         Call 'download' command and return parsed dictionary
         
@@ -578,6 +616,10 @@ class BoxLinkAPI:
                     if attempt['error']:
                         print(f"  Attempt {attempt['attempt_number']}: {attempt['error']}")
         """
+        ok, data, _ = self._fast('download', timeout=None, on_progress=on_progress, fileId=file_id, dest=os.path.abspath(str(destination_path)))
+        if ok:
+            return True, self._fast_download_result(file_id, data), ""
+
         success, output, error = self.call_command('download', file_id, destination_path, timeout=None)
 
         if not success and not output:
@@ -589,6 +631,32 @@ class BoxLinkAPI:
         except Exception as e:
             return False, None, f"Error parsing output: {str(e)}"
     
+    @staticmethod
+    def _fast_download_result(file_id: str, data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Shape a BoxFast download reply like the dict _parse_download_output builds."""
+        data = data or {}
+        return {
+            'file_id': file_id,
+            'destination': data.get('path'),
+            'attempts': [{'attempt_number': 1, 'success': True, 'error': None}],
+            'total_attempts': 1,
+            'status': 'SUCCESS',
+            'downloaded': True,
+            'unchanged': bool(data.get('unchanged')),
+        }
+
+    def download_small_dict(self, file_id: str, dest_dir: str, name: str,
+                            sha1: Optional[str] = None) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """
+        Download a tiny file (icon, Flow.txt, README) whose Box name is already known - one Box call through BoxFast
+        instead of a process start + login + info lookup + download. If *sha1* equals the hash of the copy already on
+        disk, nothing is downloaded and the result has 'unchanged': True. Falls back to download_dict().
+        """
+        ok, data, _ = self._fast('downloadSmall', timeout=None, fileId=file_id, dest=os.path.abspath(str(dest_dir)), name=name, sha1=sha1)
+        if ok:
+            return True, self._fast_download_result(file_id, data), ""
+        return self.download_dict(file_id, dest_dir)
+
     def is_available(self) -> bool:
         """
         Check if BoxAutomate.exe is available and accessible

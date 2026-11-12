@@ -18,11 +18,14 @@ if not exist "%BASE_DIR%App_Store\" (
     echo Created App_Store folder.
 )
 
-REM --- Auto-update: runs in this terminal, waits to fully complete before continuing ---
-if exist "%BASE_DIR%runtime.exe" (
-    echo Checking for updates...
-    "%BASE_DIR%runtime.exe"
-    echo Update check done. Launching app...
+REM --- Updates: the app's own start-up dashboard checks GitHub and asks (no console prompt needed). ---
+REM --- runtime.exe is only needed for a FIRST install, to download the app and build the .venv. ---
+if not exist "%BASE_DIR%.venv\Scripts\python.exe" (
+    if exist "%BASE_DIR%runtime.exe" (
+        echo First install: downloading the app and setting up the environment...
+        "%BASE_DIR%runtime.exe"
+        echo Setup done. Launching app...
+    )
 )
 
 REM --- Define environment paths ---
@@ -37,8 +40,14 @@ if not exist "%ENV_PYTHON%" (
     exit /b 1
 )
 
-REM --- Launch app ---
+REM --- Launch app WITHOUT a terminal window: pythonw.exe has no console. The app has a Show/Hide Console button, ---
+REM --- and until the console is shown its output is written to Log_data\app_output.log. Falls back to python.exe. ---
 set PYTHONDONTWRITEBYTECODE=1
+if exist "%ENV_DIR%\Scripts\pythonw.exe" (
+    start "" "%ENV_DIR%\Scripts\pythonw.exe" "%BASE_DIR%%MAIN_SCRIPT%"
+    endlocal
+    exit /b 0
+)
 "%ENV_PYTHON%" "%BASE_DIR%%MAIN_SCRIPT%"
 
 echo.

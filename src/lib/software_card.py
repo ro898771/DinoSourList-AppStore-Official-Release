@@ -15,6 +15,7 @@ from PySide6.QtGui import QPixmap, QIcon, QColor, QPainter, QPen
 from .clickable_label import ClickableLabel
 from .bookmark_button import BookmarkButton
 from .folder_parser import parse_software_folder_name, format_software_name, format_version, format_author, get_author_raw
+from .styles import mark_doc_pending
 from .styles import (
     CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE,
     CARD_INFO_STYLE, VERSION_LATEST_CONFIG, VERSION_OUTDATED_CONFIG,
@@ -76,7 +77,7 @@ class SoftwareCard(QFrame):
     favourite_toggled = Signal(str, bool)  # Emits (folder_name, new_is_favourite)
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
-                 icon_path=None, folder_name=None, folder_id=None, readme_available=True,
+                 icon_path=None, folder_name=None, folder_id=None, readme_available=True, readme_pending=False,
                  exec_valid=True, is_favourite=False):
         super().__init__()
         self.folder_path = folder_path
@@ -131,6 +132,9 @@ class SoftwareCard(QFrame):
         else:
             readme_button.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
             readme_button.setEnabled(False)
+        self.readme_label = readme_button
+        if readme_pending and readme_available:
+            mark_doc_pending(readme_button, 'readme')
         left_col.addWidget(readme_button)
 
         self.path_button = ClickableLabel("Path")

@@ -109,6 +109,7 @@ class SettingsDialog(QDialog):
     refresh_select_requested = Signal(list)   # selected App_Store folder names
     refresh_no_readme_guide_requested = Signal()
     refresh_new_apps_requested = Signal()
+    revert_requested = Signal(str)            # commit sha to go back to
 
     def __init__(self, app_names, parent=None, active_mode=1, active_selected_apps=None):
         super().__init__(parent)
@@ -140,6 +141,8 @@ class SettingsDialog(QDialog):
             "🔄  Refresh Setting",
             self._build_refresh_setting_page(app_names, active_selected_apps or []),
         )
+        self._register_category("↩  Revert Version", self._build_revert_page())
+        self._register_category("📜  Log", self._build_log_page())
         # Future settings groups go here, e.g.:
         #   self._register_category("🎨  Display Setting", self._build_display_setting_page())
 
@@ -192,6 +195,28 @@ class SettingsDialog(QDialog):
         page_layout.addWidget(self._build_new_apps_card())
 
         return page
+
+    def _build_revert_page(self):
+        from .revert_dialog import RevertPanel
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(24, 14, 24, 20)
+        panel = RevertPanel(page, show_title=False, show_cancel=False)
+        panel.chosen.connect(self._on_revert_chosen)
+        page_layout.addWidget(panel)
+        return page
+
+    def _build_log_page(self):
+        from .log_viewer import LogPanel
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(24, 14, 24, 20)
+        page_layout.addWidget(LogPanel(page))
+        return page
+
+    def _on_revert_chosen(self, sha):
+        self.revert_requested.emit(sha)
+        self.close()
 
     def _option_card(self, mode, title, description):
         """A bordered card with a title/description on top; caller adds its

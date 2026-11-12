@@ -2,6 +2,7 @@
 Workers - Background worker classes for async operations
 """
 
+import itertools
 import os
 import sys
 import shutil
@@ -22,6 +23,89 @@ def _lp(path):
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtCore import QObject, Signal
 from .boxlink_api import BoxLinkAPI
+
+
+def _extract_zip_parallel(zip_path, target_folder, progress=None):
+    """Extract *zip_path* into *target_folder* with several threads (port of the WPF Compiler's ExtractParallel).
+
+    Flattens a single root folder (e.g. "v6.1.0.0/") like the old single-threaded code did. Every worker opens its
+    own ZipFile (ZipFile is not thread safe); zlib and file writes release the GIL so threads genuinely overlap.
+    All directories are created once up front. Long-path safe via _lp().
+    """
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        infos = zf.infolist()
+
+    roots = {i.filename.split('/')[0] for i in infos if '/' in i.filename}
+    root = next(iter(roots)) if len(roots) == 1 else None
+    if root and progress:
+        progress(f"Extracting files from {root}...")
+
+    target_folder = Path(target_folder)
+    dirs = set()
+    files = []          # (zip index, absolute target path)
+    for idx, info in enumerate(infos):
+        name = info.filename
+        rel = name
+        if root is not None:
+            if name == root or name == root + '/' or not name.startswith(root + '/'):
+                continue
+            rel = name[len(root) + 1:]
+            if not rel:
+                continue
+        parts = [p for p in rel.split('/') if p]
+        if not parts or '..' in parts:       # zip-slip guard
+            continue
+        dest = target_folder.joinpath(*parts)
+        if name.endswith('/'):
+            dirs.add(dest)
+        else:
+            dirs.add(dest.parent)
+            files.append((idx, dest))
+
+    for d in dirs:
+        os.makedirs(_lp(d), exist_ok=True)
+    if not files:
+        return
+
+    workers = max(1, min(16, os.cpu_count() or 4, len(files)))
+    errors = []
+    counter = itertools.count(1)
+    step = max(1, len(files) // 20)            # report about every 5 %
+
+    def work(w):
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zinfos = zf.infolist()
+                for k in range(w, len(files), workers):
+                    idx, dest = files[k]
+                    lp_target = _lp(dest)
+                    if os.path.exists(lp_target):          # overwrite
+                        if os.path.isdir(lp_target):
+                            shutil.rmtree(lp_target)
+                        else:
+                            try:
+                                os.chmod(lp_target, 0o777)
+                            except Exception:
+                                pass
+                            os.remove(lp_target)
+                    with zf.open(zinfos[idx]) as src, open(lp_target, 'wb') as out:
+                        shutil.copyfileobj(src, out, 256 * 1024)
+                    n = next(counter)
+                    if progress and (n % step == 0 or n == len(files)):
+                        progress(f"📦 Installing... {n * 100 // len(files)}%  ({n} of {len(files)} files)")
+        except Exception as exc:
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(work, range(workers)))
+    if errors:
+        raise errors[0]
+
+
+def _scan_pool(task_count):
+    """Thread-pool width for Box folder scans: wide when the persistent BoxFast helper serves them (one login, many
+    simultaneous requests), the old cap of 10 when every call has to start BoxAutomate.exe."""
+    return max(1, min(task_count, 32 if BoxLinkAPI.fast_available() else 10))
 
 
 class WorkerSignals(QObject):
@@ -63,7 +147,7 @@ class RefreshWorker(QObject):
                 
                 if sub_folders:
                     # Fetch all sub-folder contents in parallel
-                    max_workers = min(len(sub_folders), 10)
+                    max_workers = _scan_pool(len(sub_folders))
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         future_to_item = {
                             executor.submit(
@@ -104,7 +188,7 @@ class RefreshWorker(QObject):
                 ]
                 
                 if top_level_folders:
-                    max_workers = min(len(top_level_folders), 10)
+                    max_workers = _scan_pool(len(top_level_folders))
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         future_to_item = {
                             executor.submit(
@@ -170,7 +254,7 @@ class TargetedRefreshWorker(RefreshWorker):
                 return
 
             items = []
-            max_workers = min(len(self.targets), 10)
+            max_workers = _scan_pool(len(self.targets))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_target = {
                     executor.submit(self._get_folder_contents_recursive, folder_id): (folder_name, folder_id)
@@ -498,6 +582,14 @@ class DownloadInstallWorker(QObject):
         except Exception as e:
             self.progress.emit(f"  ⚠ Failed to start installation: {e}")
 
+    def _on_bytes(self, done, total):
+        """Live download progress (BoxFast reports bytes): same wording on the bottom status bar as the dashboards."""
+        label = f"{self.software_name} {self.version}"
+        if total > 0:
+            self.progress.emit(f"⬇️ Downloading {label}... {done * 100 // total}%  ({done / 1048576:.1f} of {total / 1048576:.1f} MB)")
+        else:
+            self.progress.emit(f"⬇️ Downloading {label}... {done / 1048576:.1f} MB")
+
     def run(self):
         """Download, extract, and install software"""
         try:
@@ -518,11 +610,11 @@ class DownloadInstallWorker(QObject):
                     print(f"Warning: Could not remove leftover temp file {leftover}: {e}")
 
             # Download zip file
-            self.progress.emit(f"Downloading {self.software_name} {self.version}...")
+            self.progress.emit(f"⬇️ Downloading {self.software_name} {self.version}...")
             
             # Download to temp_download folder
             # BoxAutomate will save the file with its original name from Box
-            success, data, error = api.download_dict(self.file_id, str(temp_dir))
+            success, data, error = api.download_dict(self.file_id, str(temp_dir), on_progress=self._on_bytes)
             
             if not success:
                 self.finished.emit(False, f"Download failed: {error}")
@@ -600,77 +692,10 @@ class DownloadInstallWorker(QObject):
             
             # Extract zip contents to target folder
             self.progress.emit(f"Installing {self.software_name} {self.version}...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                # Check if ZIP has a root folder (like v6.1.0.0/)
-                zip_contents = zip_ref.namelist()
-
-                # Check if all files are in a single root folder
-                root_folders = set()
-                for name in zip_contents:
-                    parts = name.split('/')
-                    if len(parts) > 1:
-                        root_folders.add(parts[0])
-
-                # If all files are in a single root folder, extract and flatten
-                if len(root_folders) == 1:
-                    root_folder = list(root_folders)[0]
-                    self.progress.emit(f"Extracting files from {root_folder}...")
-
-                    for member in zip_ref.namelist():
-                        # Skip the root folder itself
-                        if member == root_folder or member == root_folder + '/':
-                            continue
-
-                        # Remove root folder from path
-                        if member.startswith(root_folder + '/'):
-                            target_path = member[len(root_folder) + 1:]
-
-                            # Skip empty paths
-                            if not target_path:
-                                continue
-
-                            target_file = target_folder / target_path
-
-                            # If this is a directory entry (ends with /), create directory
-                            if member.endswith('/'):
-                                os.makedirs(_lp(target_file), exist_ok=True)
-                            else:
-                                # Create parent directories if needed
-                                os.makedirs(_lp(target_file.parent), exist_ok=True)
-
-                                # Remove existing file/folder if it exists (overwrite)
-                                lp_target = _lp(target_file)
-                                if os.path.exists(lp_target):
-                                    if os.path.isdir(lp_target):
-                                        shutil.rmtree(lp_target)
-                                    else:
-                                        try:
-                                            os.chmod(lp_target, 0o777)
-                                        except Exception:
-                                            pass
-                                        os.remove(lp_target)
-
-                                # Write file with long-path support
-                                with zip_ref.open(member) as source:
-                                    with open(lp_target, 'wb') as f:
-                                        f.write(source.read())
-                else:
-                    # No root folder or multiple root folders — extract with long-path support
-                    for member in zip_ref.namelist():
-                        target_file = target_folder / member
-                        if member.endswith('/'):
-                            os.makedirs(_lp(target_file), exist_ok=True)
-                        else:
-                            os.makedirs(_lp(target_file.parent), exist_ok=True)
-                            with zip_ref.open(member) as source:
-                                with open(_lp(target_file), 'wb') as f:
-                                    f.write(source.read())
+            _extract_zip_parallel(zip_path, target_folder, self.progress.emit)
             
             # Clean up temp files
             self.progress.emit(f"Cleaning up...")
-            
-            # Wait a moment to ensure all file handles are released
-            time.sleep(0.5)
             
             # Try to delete zip file with retry logic
             max_retries = 3

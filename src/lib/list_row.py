@@ -22,6 +22,7 @@ from .folder_parser import (
     parse_software_folder_name, format_software_name, format_version,
     format_author, get_author_raw,
 )
+from .styles import mark_doc_pending
 from .styles import (
     get_version_label_style, DISABLED_ACTION_LABEL_STYLE,
     VERSION_LATEST_CONFIG, VERSION_OUTDATED_CONFIG, COMBOBOX_STYLE,
@@ -90,7 +91,7 @@ class SoftwareListRow(QFrame):
     favourite_toggled = Signal(str, bool)
 
     def __init__(self, name, lnk_path, folder_path, is_latest=True, record_path=None,
-                 icon_path=None, folder_name=None, folder_id=None, readme_available=True,
+                 icon_path=None, folder_name=None, folder_id=None, readme_available=True, readme_pending=False,
                  sequence_number=None, exec_valid=True, is_favourite=False):
         super().__init__()
         self.folder_path = folder_path
@@ -155,6 +156,9 @@ class SoftwareListRow(QFrame):
         else:
             readme_button.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
             readme_button.setEnabled(False)
+        self.readme_label = readme_button
+        if readme_pending and readme_available:
+            mark_doc_pending(readme_button, 'readme')
         layout.addWidget(readme_button, 0, Qt.AlignVCenter)
 
         delete_button = ClickableLabel("Delete")
@@ -338,7 +342,7 @@ class StoreListRow(QFrame):
     favourite_toggled = Signal(str, bool)
 
     def __init__(self, software_name, author_name, icon_path=None, json_path=None,
-                 folder_name=None, folder_id=None, guide_available=True, readme_available=True,
+                 folder_name=None, folder_id=None, guide_available=True, readme_available=True, guide_pending=False, readme_pending=False,
                  sequence_number=None, is_favourite=False):
         super().__init__()
         self.software_name = software_name
@@ -390,6 +394,8 @@ class StoreListRow(QFrame):
         else:
             self.guide_label.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
             self.guide_label.setEnabled(False)
+        if guide_pending and guide_available:
+            mark_doc_pending(self.guide_label, 'guide')
         layout.addWidget(self.guide_label, 0, Qt.AlignVCenter)
 
         self.readme_label = ClickableLabel("ReadMe")
@@ -405,6 +411,8 @@ class StoreListRow(QFrame):
         else:
             self.readme_label.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
             self.readme_label.setEnabled(False)
+        if readme_pending and readme_available:
+            mark_doc_pending(self.readme_label, 'readme')
         layout.addWidget(self.readme_label, 0, Qt.AlignVCenter)
 
         self.refresh_card_btn = ClickableLabel("⟳")

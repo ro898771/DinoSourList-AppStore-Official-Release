@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QIcon
+from .styles import mark_doc_pending
 from .styles import (
     CARD_STYLE, CARD_ICON_STYLE, CARD_ICON_FALLBACK_STYLE, CARD_INFO_STYLE, COMBOBOX_STYLE,
     get_version_label_style, DISABLED_ACTION_LABEL_STYLE,
@@ -25,7 +26,7 @@ class StoreCard(QFrame):
     favourite_toggled = Signal(str, bool)     # Emits (folder_name, new_is_favourite)
 
     def __init__(self, software_name, author_name, icon_path=None, json_path=None,
-                 folder_name=None, folder_id=None, guide_available=True, readme_available=True,
+                 folder_name=None, folder_id=None, guide_available=True, readme_available=True, guide_pending=False, readme_pending=False,
                  is_favourite=False):
         super().__init__()
         self.software_name = software_name
@@ -70,6 +71,8 @@ class StoreCard(QFrame):
         else:
             self.guide_label.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
             self.guide_label.setEnabled(False)
+        if guide_pending and guide_available:
+            mark_doc_pending(self.guide_label, 'guide')
         left_col.addWidget(self.guide_label)
 
         self.readme_label = ClickableLabel("ReadMe")
@@ -88,6 +91,8 @@ class StoreCard(QFrame):
         else:
             self.readme_label.setStyleSheet(DISABLED_ACTION_LABEL_STYLE)
             self.readme_label.setEnabled(False)
+        if readme_pending and readme_available:
+            mark_doc_pending(self.readme_label, 'readme')
         left_col.addWidget(self.readme_label)
 
         top_row.addLayout(left_col)

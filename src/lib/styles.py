@@ -799,3 +799,24 @@ STATUS_CONSOLE_TEXT_STYLE = """
 """
 
 STATUS_CONSOLE_MIN_HEIGHT = 400
+
+
+# README / Details that are listed on Box but not downloaded yet (or whose downloaded copy is outdated): orange, still clickable
+# -- the click downloads the file first, then opens it, and the button turns back to its normal colour.
+DOC_PENDING_TOOLTIP = "Not downloaded yet (or a newer copy is on Box) - click to download and open"
+_DOC_READY_COLORS = {
+    "readme": ("#007bff", "#cfe2ff", "#b6d4fe", "#0056b3"),
+    "guide": ("#6f42c1", "#e2d9f3", "#d3c5e8", "#5a32a3"),
+}
+
+
+def mark_doc_pending(label, kind=None):
+    """Turn a README/Details label orange (not downloaded yet)."""
+    label.setStyleSheet(get_version_label_style("#c2410c", "#ffedd5", "#fed7aa", "#9a3412"))
+    label.setToolTip(DOC_PENDING_TOOLTIP)
+
+
+def mark_doc_ready(label, kind):
+    """Back to the normal colour once the file is on disk (kind = 'readme' or 'guide')."""
+    label.setStyleSheet(get_version_label_style(*_DOC_READY_COLORS[kind]))
+    label.setToolTip("")

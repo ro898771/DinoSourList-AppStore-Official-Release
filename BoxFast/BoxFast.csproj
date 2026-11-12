@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Persistent Box helper for the Python app: one long-lived process, one authenticated Box client, JSON lines over stdin/stdout.
+       Replaces launching BoxAutomate.exe (and a fresh Box login) for every single call.
+       Build: build.cmd  ->  BoxLink-API\BoxFast.exe (framework-dependent, same net6.0 runtime BoxAutomate.exe already needs). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <AssemblyName>BoxFast</AssemblyName>
+    <RootNamespace>BoxFast</RootNamespace>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TieredPGO>true</TieredPGO>
+    <TieredCompilationQuickJitForLoops>true</TieredCompilationQuickJitForLoops>
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Box.V2" Version="3.21.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Box.Automation.WSD">
+      <HintPath>..\BoxLink-API\Box.Automation.WSD.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>

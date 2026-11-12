@@ -14,6 +14,7 @@ class AppStoreDownloadWorker(QObject):
     """Worker for creating metadata JSON files and downloading icons in App_Store"""
     finished = Signal(object)
     progress = Signal(str)
+    percent = Signal(float)      # 0..1 overall progress of a full sync (drives the Refresh dashboard's bar)
 
     def __init__(self, record_data, app_store_path, skip_readme_and_guide=False):
         super().__init__()
@@ -24,16 +25,29 @@ class AppStoreDownloadWorker(QObject):
         # README.md either (see the Pass 3 fallback below).
         self.skip_readme_and_guide = skip_readme_and_guide
 
+    @staticmethod
+    def _pool_size(task_count, legacy_cap=6):
+        """Thread-pool width for Box downloads. BoxFast serves many requests at once over one login, so go wide;
+        the BoxAutomate.exe fallback starts a process per call and stays at its old cap."""
+        wide = 32 if BoxLinkAPI.fast_available() else legacy_cap
+        return max(1, min(task_count, wide))
+
     def _download_file(self, task):
-        """Download a single file from Box. Used by ThreadPoolExecutor."""
-        file_id, dest_path, file_name, folder_name = task
+        """Download a single small file from Box (icon, Flow.txt, ...). Used by ThreadPoolExecutor.
+
+        task = (file_id, dest_dir, file_name, folder_name[, box_sha1]). When box_sha1 matches the file already on
+        disk nothing is downloaded. Returns (ok, file_name, folder_name, error, unchanged).
+        """
+        file_id, dest_path, file_name, folder_name = task[:4]
+        sha1 = task[4] if len(task) > 4 else None
         try:
             api = BoxLinkAPI()
-            success, download_data, error = api.download_dict(file_id, dest_path)
-            ok = success and download_data and download_data.get('downloaded')
-            return ok, file_name, folder_name, error
+            success, download_data, error = api.download_small_dict(file_id, dest_path, file_name, sha1)
+            ok = bool(success and download_data and download_data.get('downloaded'))
+            unchanged = bool(ok and download_data.get('unchanged'))
+            return ok, file_name, folder_name, error, unchanged
         except Exception as exc:
-            return False, file_name, folder_name, str(exc)
+            return False, file_name, folder_name, str(exc), False
 
     def _parse_flow_txt(self, flow_path):
         """Parse Flow.txt to extract icon, guide, and readme info.
@@ -139,6 +153,7 @@ class AppStoreDownloadWorker(QObject):
             #     'flow_file_id': str or None
             # }
             software_info = {}
+            self.percent.emit(0.01)
 
             for parent_item in self.record_data['items']:
                 if parent_item.get('type') != 'folder':
@@ -156,6 +171,7 @@ class AppStoreDownloadWorker(QObject):
 
                 files_metadata = []
                 files_by_name = {}
+                sha_by_name = {}
                 flow_file_id = None
 
                 for item in items:
@@ -163,7 +179,11 @@ class AppStoreDownloadWorker(QObject):
                         file_name = item.get('name', '')
                         file_id = item.get('id', '')
                         if file_name and file_id:
-                            files_metadata.append({'name': file_name, 'id': file_id})
+                            entry = {'name': file_name, 'id': file_id}
+                            if item.get('sha1'):
+                                entry['sha1'] = item['sha1']   # Box content hash: lets refresh skip unchanged files
+                                sha_by_name[file_name.lower()] = item['sha1']
+                            files_metadata.append(entry)
                             files_by_name[file_name.lower()] = (file_name, file_id)
                             if file_name.lower() == 'flow.txt':
                                 flow_file_id = file_id
@@ -184,6 +204,7 @@ class AppStoreDownloadWorker(QObject):
                         software_info[parent_name] = {
                             'folder_path': parent_folder_path,
                             'files_by_name': files_by_name,
+                            'sha_by_name': sha_by_name,
                             'flow_file_id': flow_file_id
                         }
                     except Exception as e:
@@ -197,22 +218,28 @@ class AppStoreDownloadWorker(QObject):
             # Pass 2: Download Flow.txt files in parallel (always re-download
             #         so icon/guide references are always up to date)
             # ------------------------------------------------------------------
+            self.percent.emit(0.05)
             flow_tasks = [
-                (info['flow_file_id'], str(info['folder_path']), 'Flow.txt', name)
+                (info['flow_file_id'], str(info['folder_path']), 'Flow.txt', name,
+                 info['sha_by_name'].get('flow.txt'))
                 for name, info in software_info.items()
                 if info['flow_file_id']
             ]
 
             if flow_tasks:
                 self.progress.emit(f"Downloading {len(flow_tasks)} Flow.txt file(s)...")
-                max_workers = min(len(flow_tasks), 6)
+                max_workers = self._pool_size(len(flow_tasks))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [executor.submit(self._download_file, t) for t in flow_tasks]
-                    for future in as_completed(futures):
+                    for done_count, future in enumerate(as_completed(futures), 1):
+                        self.percent.emit(0.05 + 0.45 * done_count / len(flow_tasks))
                         try:
-                            ok, file_name, folder_name, error = future.result()
+                            ok, file_name, folder_name, error, unchanged = future.result()
                             if ok:
-                                self.progress.emit(f"  ✓ Downloaded Flow.txt for {folder_name}")
+                                self.progress.emit(
+                                    f"  ✓ Flow.txt unchanged for {folder_name}" if unchanged
+                                    else f"  ✓ Downloaded Flow.txt for {folder_name}"
+                                )
                                 flow_downloaded += 1
                             else:
                                 self.progress.emit(
@@ -235,82 +262,47 @@ class AppStoreDownloadWorker(QObject):
                     # No Flow.txt — fall back to icon.ico directly if on Box
                     if 'icon.ico' in files_by_name:
                         _, file_id = files_by_name['icon.ico']
-                        asset_tasks.append((file_id, str(folder_path), 'icon.ico', parent_name))
+                        asset_tasks.append((file_id, str(folder_path), 'icon.ico', parent_name,
+                                            info['sha_by_name'].get('icon.ico')))
                     else:
                         self.progress.emit(
                             f"  ⚠ No Flow.txt and no icon.ico for {parent_name} — skipping"
                         )
                     continue
 
-                icon_filename, guide_filename, guide_changed, readme_filename = \
-                    self._parse_flow_txt(flow_path)
+                icon_filename = self._parse_flow_txt(flow_path)[0]
 
-                if self.skip_readme_and_guide:
-                    guide_filename = None
-                    readme_filename = None
-
-                # Queue icon — always re-download
+                # README and the Details guide are NOT fetched during a refresh (guides can be tens of MB and are
+                # rarely opened): they download the first time the user clicks them (see docs.py), and are
+                # re-offered automatically when Box has a newer copy.
                 if icon_filename:
                     key = icon_filename.lower()
                     if key in files_by_name:
                         _, file_id = files_by_name[key]
-                        asset_tasks.append((file_id, str(folder_path), icon_filename, parent_name))
+                        asset_tasks.append((file_id, str(folder_path), icon_filename, parent_name,
+                                            info['sha_by_name'].get(key)))
                     else:
                         self.progress.emit(
                             f"  ⚠ {icon_filename} not found in Box for {parent_name}"
                         )
 
-                # Queue guide — respect Changed= flag
-                if guide_filename:
-                    key = guide_filename.lower()
-                    if key in files_by_name:
-                        _, file_id = files_by_name[key]
-                        dest = folder_path / guide_filename
-                        if guide_changed:
-                            asset_tasks.append((file_id, str(folder_path), guide_filename, parent_name))
-                        elif dest.exists():
-                            self.progress.emit(
-                                f"  ⊘ {guide_filename} unchanged (Changed=False) — skipping"
-                            )
-                        else:
-                            asset_tasks.append((file_id, str(folder_path), guide_filename, parent_name))
-                    else:
-                        self.progress.emit(
-                            f"  ⚠ {guide_filename} not found in Box for {parent_name}"
-                        )
-
-                # Queue readme — always re-download when Flag=True
-                if readme_filename:
-                    key = readme_filename.lower()
-                    if key in files_by_name:
-                        _, file_id = files_by_name[key]
-                        asset_tasks.append((file_id, str(folder_path), readme_filename, parent_name))
-                    else:
-                        self.progress.emit(
-                            f"  ⚠ {readme_filename} not found in Box for {parent_name}"
-                        )
-                elif not self.skip_readme_and_guide:
-                    # Safety fallback: if Flow.txt has no [ReadMe] section but
-                    # README.md exists in Box, download it automatically so the
-                    # AI assistant can index it. Suppressed in skip_readme_and_guide
-                    # mode -- that mode means "icon + Flow.txt + metadata only".
-                    if 'readme.md' in files_by_name:
-                        _, file_id = files_by_name['readme.md']
-                        asset_tasks.append((file_id, str(folder_path), 'README.md', parent_name))
-
             # ------------------------------------------------------------------
-            # Pass 4: Download icon/guide files in parallel
+            # Pass 4: Download icons in parallel (unchanged ones are skipped by SHA-1)
             # ------------------------------------------------------------------
             if asset_tasks:
                 self.progress.emit(f"Downloading {len(asset_tasks)} asset file(s) in parallel...")
-                max_workers = min(len(asset_tasks), 6)
+                max_workers = self._pool_size(len(asset_tasks))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [executor.submit(self._download_file, t) for t in asset_tasks]
-                    for future in as_completed(futures):
+                    for done_count, future in enumerate(as_completed(futures), 1):
+                        self.percent.emit(0.5 + 0.45 * done_count / len(asset_tasks))
                         try:
-                            ok, file_name, folder_name, error = future.result()
+                            ok, file_name, folder_name, error, unchanged = future.result()
                             if ok:
-                                self.progress.emit(f"  ✓ Downloaded {file_name} for {folder_name}")
+                                self.progress.emit(
+                                    f"  ✓ {file_name} unchanged for {folder_name}" if unchanged
+                                    else f"  ✓ Downloaded {file_name} for {folder_name}"
+                                )
                                 if file_name.lower().endswith('.ico'):
                                     icon_downloaded += 1
                                 else:
@@ -396,6 +388,7 @@ class AppStoreDownloadWorker(QObject):
                                     f"  ⚠ Could not copy icon to {sw_folder.name}: {e}"
                                 )
 
+            self.percent.emit(1.0)
             result_message = (
                 f"JSON: {created_count}, "
                 f"Flows: {flow_downloaded}, "
@@ -460,6 +453,7 @@ class SingleCardDownloadWorker(AppStoreDownloadWorker):
             json_filepath = parent_folder_path / f"{parent_name}.json"
             files_metadata = []
             files_by_name = {}
+            sha_by_name = {}
             flow_file_id = None
 
             for item in items:
@@ -467,7 +461,11 @@ class SingleCardDownloadWorker(AppStoreDownloadWorker):
                     file_name = item.get('name', '')
                     file_id = item.get('id', '')
                     if file_name and file_id:
-                        files_metadata.append({'name': file_name, 'id': file_id})
+                        entry = {'name': file_name, 'id': file_id}
+                        if item.get('sha1'):
+                            entry['sha1'] = item['sha1']
+                            sha_by_name[file_name.lower()] = item['sha1']
+                        files_metadata.append(entry)
                         files_by_name[file_name.lower()] = (file_name, file_id)
                         if file_name.lower() == 'flow.txt':
                             flow_file_id = file_id
@@ -491,87 +489,63 @@ class SingleCardDownloadWorker(AppStoreDownloadWorker):
                 self.finished.emit((False, f"Failed to write JSON: {e}", 0, 0, 0))
                 return
 
-            # ── Pass 2: Re-download Flow.txt (always fresh) ───────────────────
-            if flow_file_id:
-                self.progress.emit(f"Downloading Flow.txt for {parent_name}…")
-                ok, _, _, error = self._download_file(
-                    (flow_file_id, str(parent_folder_path), 'Flow.txt', parent_name)
-                )
-                if ok:
-                    self.progress.emit("✓ Flow.txt updated")
-                    flow_downloaded += 1
-                else:
-                    self.progress.emit(f"⚠ Flow.txt failed: {error}")
-
-            # ── Pass 3: Parse Flow.txt for icon, guide AND readme ─────────────
+            # ── Pass 2+3+4: Flow.txt and the icon, started at the SAME time ───
+            # The icon's name lives in Flow.txt, but the Flow.txt already on disk almost always names the same
+            # icon -- so fetch the icon while Flow.txt downloads instead of after it (saves a whole Box round
+            # trip). If the new Flow.txt names a different icon, that one is fetched afterwards.
+            # README / Details guide are not fetched here: they download on first click (see docs.py).
             flow_path = parent_folder_path / 'Flow.txt'
-            icon_filename   = None
-            guide_filename  = None
-            readme_filename = None
-            guide_changed   = True
-            if flow_path.exists():
-                icon_filename, guide_filename, guide_changed, readme_filename = \
-                    self._parse_flow_txt(flow_path)
 
-            # Fallback: icon.ico
-            if not icon_filename and 'icon.ico' in files_by_name:
-                icon_filename = 'icon.ico'
+            def pick_icon():
+                name = self._parse_flow_txt(flow_path)[0] if flow_path.exists() else None
+                if not name and 'icon.ico' in files_by_name:
+                    name = 'icon.ico'
+                return name
 
-            # ── Pass 4: Download assets — icon always, guide + readme with rules ─
-            asset_tasks = []
-
-            # Icon: always re-download
-            if icon_filename:
-                key = icon_filename.lower()
-                if key in files_by_name:
+            def icon_task(name):
+                key = name.lower() if name else None
+                if key and key in files_by_name:
                     _, file_id = files_by_name[key]
-                    asset_tasks.append((file_id, str(parent_folder_path), icon_filename, parent_name))
-                else:
-                    self.progress.emit(f"⚠ {icon_filename} not found in Box for {parent_name}")
+                    return (file_id, str(parent_folder_path), name, parent_name, sha_by_name.get(key))
+                if name:
+                    self.progress.emit(f"⚠ {name} not found in Box for {parent_name}")
+                return None
 
-            # Guide: skip entirely when skip_guide=True, else respect Changed= flag
-            if guide_filename and self.skip_guide:
-                self.progress.emit(f"⊘ {guide_filename} — guide skipped for Dashboard refresh")
-            elif guide_filename:
-                key = guide_filename.lower()
-                if key in files_by_name:
-                    _, file_id = files_by_name[key]
-                    dest = parent_folder_path / guide_filename
-                    if guide_changed:
-                        asset_tasks.append((file_id, str(parent_folder_path), guide_filename, parent_name))
-                    elif dest.exists():
-                        self.progress.emit(f"⊘ {guide_filename} unchanged (Changed=False) — skipping")
+            guess = pick_icon()
+            self.progress.emit(f"Updating Flow.txt and icon for {parent_name}…")
+            flow_future = icon_future = None
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                if flow_file_id:
+                    flow_future = executor.submit(
+                        self._download_file,
+                        (flow_file_id, str(parent_folder_path), 'Flow.txt', parent_name, sha_by_name.get('flow.txt'))
+                    )
+                first_icon = icon_task(guess)
+                if first_icon:
+                    icon_future = executor.submit(self._download_file, first_icon)
+
+                if flow_future:
+                    ok, _, _, error, unchanged = flow_future.result()
+                    if ok:
+                        self.progress.emit("✓ Flow.txt unchanged" if unchanged else "✓ Flow.txt updated")
+                        flow_downloaded += 1
                     else:
-                        asset_tasks.append((file_id, str(parent_folder_path), guide_filename, parent_name))
-                else:
-                    self.progress.emit(f"⚠ {guide_filename} not found in Box for {parent_name}")
+                        self.progress.emit(f"⚠ Flow.txt failed: {error}")
 
-            # ReadMe: always re-download when Flag=True (both Page 1 and Page 2)
-            if readme_filename:
-                key = readme_filename.lower()
-                if key in files_by_name:
-                    _, file_id = files_by_name[key]
-                    asset_tasks.append((file_id, str(parent_folder_path), readme_filename, parent_name))
-                else:
-                    self.progress.emit(f"⚠ {readme_filename} not found in Box for {parent_name}")
+                icon_filename = pick_icon()
+                if icon_filename and icon_filename.lower() != (guess or '').lower():
+                    # Flow.txt changed its icon: fetch the new one too
+                    second_icon = icon_task(icon_filename)
+                    icon_future = executor.submit(self._download_file, second_icon) if second_icon else icon_future
 
-            # Download icon and guide in parallel (up to 2 workers)
-            if asset_tasks:
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                self.progress.emit(f"Downloading {len(asset_tasks)} asset(s) for {parent_name}…")
-                with ThreadPoolExecutor(max_workers=len(asset_tasks)) as executor:
-                    futures = [executor.submit(self._download_file, t) for t in asset_tasks]
-                    for future in as_completed(futures):
-                        try:
-                            ok, file_name, folder_name, error = future.result()
-                            if ok:
-                                self.progress.emit(f"✓ {file_name} downloaded")
-                                if file_name.lower().endswith('.ico'):
-                                    icon_downloaded += 1
-                            else:
-                                self.progress.emit(f"⚠ {file_name} failed: {error}")
-                        except Exception:
-                            pass
+                if icon_future:
+                    ok, file_name, _, error, unchanged = icon_future.result()
+                    if ok:
+                        self.progress.emit(f"✓ {file_name} unchanged" if unchanged else f"✓ {file_name} downloaded")
+                        if file_name.lower().endswith('.ico'):
+                            icon_downloaded += 1
+                    else:
+                        self.progress.emit(f"⚠ {file_name} failed: {error}")
 
             # ── Pass 5: Copy icon to matching Software_Downloaded folders ──────
             sw_downloaded_path = self.app_store_path.parent / "Software_Downloaded"
