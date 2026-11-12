@@ -19,7 +19,15 @@ def create_shortcut():
     # Create the shortcut
     shell = Dispatch("WScript.Shell")
     shortcut = shell.CreateShortcut(shortcut_path)
-    shortcut.TargetPath = target_path
+    # Start the app directly with pythonw.exe (no console window at all). Going through run&install.cmd made cmd.exe
+    # flash a black window before the GUI appeared. The .cmd stays the fallback if pythonw is not there.
+    pythonw = os.path.join(script_dir, ".venv", "Scripts", "pythonw.exe")
+    main_py = os.path.join(script_dir, "src", "main.py")
+    if os.path.exists(pythonw) and os.path.exists(main_py):
+        shortcut.TargetPath = pythonw
+        shortcut.Arguments = f'"{main_py}"'
+    else:
+        shortcut.TargetPath = target_path
     shortcut.IconLocation = icon_path
     shortcut.WorkingDirectory = script_dir
     shortcut.Save()

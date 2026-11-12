@@ -1,6 +1,7 @@
 """Software Launcher Dashboard - Entry Point"""
 
 import sys
+sys.dont_write_bytecode = True      # started directly by pythonw (desktop shortcut): same as the launcher's PYTHONDONTWRITEBYTECODE
 import time
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +85,22 @@ def main():
         app_log.log(f"GitHub update source: {updater.repo()} ({updater.branch()})  ·  installed version: {updater.shorten(updater.read_local_sha())}")
     # Start the persistent Box helper and its login right away: it overlaps with building the UI, so the first
     # refresh/download does not wait for it.
+    for folder in ("Software_Downloaded", "App_Store"):       # the launcher scripts used to create these
+        try:
+            (_REPO_ROOT / folder).mkdir(exist_ok=True)
+        except OSError:
+            pass
+
+    def _fix_shortcut():
+        """The desktop icon must open the app directly: through run&install.cmd it flashed a black console window."""
+        try:
+            from lib import shortcut_fix
+            if shortcut_fix.fix_desktop_shortcut():
+                app_log.log("Desktop shortcut now opens the app directly (no console flash)")
+        except Exception as exc:
+            app_log.log(f"Desktop shortcut check failed: {exc}")
+    threading.Thread(target=_fix_shortcut, daemon=True, name="ShortcutFix").start()
+
     def _check_launchers():
         """An old launcher (the one that opens runtime.exe's black prompt) is replaced by the new one after this run."""
         try:

@@ -10,10 +10,11 @@ from News/news.md. The edited copy is purely local - it never touches news.md.
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QEvent, QUrl
-from PySide6.QtGui import (QColor, QDesktopServices, QFont, QTextCharFormat, QTextCursor, QTextListFormat)
+from PySide6.QtCore import QEvent, QPointF, QRectF, QUrl, Qt
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QIcon, QPainter, QPen, QPixmap, QTextCharFormat,
+                           QTextCursor, QTextListFormat)
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton,
-                               QSizePolicy, QTextBrowser, QVBoxLayout, QWidget)
+                               QSizePolicy, QStyle, QStyledItemDelegate, QTextBrowser, QVBoxLayout, QWidget)
 
 from .styles import MESSAGE_BOX_STYLE
 
@@ -38,9 +39,99 @@ _TOOL_STYLE = """
     QPushButton { background: #ffffff; color: #000000; border: 1px solid #d5d8e0; border-radius: 6px; padding: 0 8px; font-size: 12px; }
     QPushButton:hover { background: #eef0ff; color: #000000; border-color: #4338ca; }
     QPushButton:checked { background: #e0e3ff; color: #000000; border-color: #4338ca; }
-    QComboBox { border: 1px solid #d5d8e0; border-radius: 6px; padding: 0 6px; font-size: 12px; background: #ffffff; color: #000000; }
-    QComboBox QAbstractItemView { background: #ffffff; color: #000000; selection-background-color: #e0e3ff; selection-color: #000000; }
 """
+
+# Modern drop-down: soft rounded border, one slim chevron, indigo on hover/open, rounded popup with a tick on the current row.
+_COMBO_STYLE = """
+    QComboBox { border: 1px solid #d5d8e0; border-radius: 8px; padding: 0 28px 0 10px; font-size: 12px;
+                background: #ffffff; color: #000000; }
+    QComboBox:hover, QComboBox:on { border-color: #4338ca; background: #f7f7ff; }
+    QComboBox::drop-down { border: none; width: 26px; }
+    QComboBox::down-arrow { image: none; width: 0; height: 0; }
+    QComboBox QAbstractItemView { background: #ffffff; color: #000000; border: 1px solid #e0e3ee; border-radius: 10px;
+                                  padding: 4px; outline: none; selection-background-color: transparent; }
+"""
+
+
+class _ComboDelegate(QStyledItemDelegate):
+    """Popup rows: rounded hover/current highlight, optional colour swatch, each font name in its own font, a tick on the
+    current row."""
+
+    def __init__(self, combo, swatches=None, preview_fonts=False):
+        super().__init__(combo)
+        self._combo = combo
+        self._swatches = swatches
+        self._preview_fonts = preview_fonts
+
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(option.rect).adjusted(2, 1, -2, -1)
+        current = index.row() == self._combo.currentIndex()
+        if option.state & QStyle.State_MouseOver:
+            painter.setPen(Qt.NoPen); painter.setBrush(QColor("#eef0ff")); painter.drawRoundedRect(rect, 6, 6)
+        elif current:
+            painter.setPen(Qt.NoPen); painter.setBrush(QColor("#f3f4f6")); painter.drawRoundedRect(rect, 6, 6)
+        x = rect.left() + 10
+        if self._swatches:
+            painter.setPen(QPen(QColor("#d1d5db"), 1)); painter.setBrush(QColor(self._swatches[index.row()]))
+            painter.drawEllipse(QPointF(x + 6, rect.center().y()), 6, 6)
+            x += 20
+        font = QFont(option.font)
+        if self._preview_fonts:
+            font.setFamily(index.data(Qt.DisplayRole))
+        painter.setFont(font)
+        painter.setPen(QColor("#000000"))
+        painter.drawText(QRectF(x, rect.top(), rect.right() - x - 24, rect.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                         index.data(Qt.DisplayRole) or "")
+        if current:
+            pen = QPen(QColor("#4338ca"), 1.8); pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            cx, cy = rect.right() - 14, rect.center().y()
+            painter.drawPolyline([QPointF(cx - 4, cy), QPointF(cx - 1, cy + 3), QPointF(cx + 4, cy - 3)])
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setHeight(max(size.height(), 30))
+        return size
+
+
+class ModernCombo(QComboBox):
+    """Flat rounded drop-down with a single slim chevron (instead of the platform's heavy boxed arrow)."""
+
+    def __init__(self, items, width, swatches=None, preview_fonts=False, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(width, 28)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setStyleSheet(_COMBO_STYLE)
+        self.addItems(items)
+        if swatches:                         # the closed box shows the colour too
+            for i, hex_ in enumerate(swatches):
+                pm = QPixmap(14, 14); pm.fill(Qt.transparent)
+                p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+                p.setPen(QPen(QColor("#d1d5db"), 1)); p.setBrush(QColor(hex_)); p.drawEllipse(1, 1, 12, 12); p.end()
+                self.setItemIcon(i, QIcon(pm))
+        self.setItemDelegate(_ComboDelegate(self, swatches, preview_fonts))
+        self.setMaxVisibleItems(10)
+        view = self.view()
+        view.setMouseTracking(True)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        view.setMinimumWidth(max(width, 160))        # the list is never narrower than its longest name
+        popup = view.window()               # the popup container: frameless + transparent so the list's rounded corners show
+        popup.setWindowFlags(popup.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        popup.setAttribute(Qt.WA_TranslucentBackground)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#4338ca") if self.underMouse() else QColor("#6b7280"), 1.6)
+        pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        cx, cy = self.width() - 15, self.height() / 2
+        painter.drawPolyline([QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2)])
+        painter.end()
 
 
 class NewsEditor(QWidget):
@@ -98,14 +189,10 @@ class NewsEditor(QWidget):
         row.setContentsMargins(0, 0, 0, 8)
         row.setSpacing(4)
 
-        self._font = QComboBox(); self._font.addItems(_FONTS); self._font.setFixedSize(130, 28)
-        self._font.setToolTip("Text type"); self._font.setFocusPolicy(Qt.NoFocus)
-        self._size = QComboBox(); self._size.addItems([str(s) for s in _SIZES]); self._size.setFixedSize(64, 28)
-        self._size.setToolTip("Text size"); self._size.setFocusPolicy(Qt.NoFocus)
-        self._color = QComboBox(); self._color.setFixedSize(96, 28)
-        self._color.setToolTip("Text colour"); self._color.setFocusPolicy(Qt.NoFocus)
-        for name, _hex in _COLOURS:
-            self._color.addItem(name)
+        self._font = ModernCombo(_FONTS, 140, preview_fonts=True); self._font.setToolTip("Text type")
+        self._size = ModernCombo([str(s) for s in _SIZES], 66); self._size.setToolTip("Text size")
+        self._color = ModernCombo([n for n, _h in _COLOURS], 124, swatches=[h for _n, h in _COLOURS])
+        self._color.setToolTip("Text colour")
         self._font.activated.connect(lambda i: self._apply(lambda f: f.setFontFamilies([_FONTS[i]])))
         self._size.activated.connect(lambda i: self._apply(lambda f: f.setFontPointSize(float(_SIZES[i]))))
         self._color.activated.connect(lambda i: self._apply(lambda f: f.setForeground(QColor(_COLOURS[i][1]))))
@@ -194,8 +281,9 @@ class NewsEditor(QWidget):
             fam = self.edit.currentFont().family()
             i = next((k for k, n in enumerate(_FONTS) if n.lower() == fam.lower()), -1)
             self._font.setCurrentIndex(i)
-            pt = self.edit.fontPointSize()
-            j = next((k for k, s in enumerate(_SIZES) if abs(s - pt) < 0.6), -1)
+            pt = self.edit.fontPointSize() or self.edit.currentFont().pointSizeF()
+            # the closest listed size (a heading's 18.7 pt shows as 18) - never an empty box
+            j = min(range(len(_SIZES)), key=lambda k: abs(_SIZES[k] - pt)) if pt > 0 else -1
             self._size.setCurrentIndex(j)
         finally:
             self._syncing = False
