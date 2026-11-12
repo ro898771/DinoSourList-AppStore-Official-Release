@@ -290,6 +290,96 @@ def venv_missing() -> bool:
     return not (APP_ROOT / ".venv" / "Scripts" / "python.exe").exists()
 
 
+# ── launcher scripts ─────────────────────────────────────────────────────────────
+# An update never replaces run.cmd / run&install.cmd (a running batch file must not change under cmd.exe), so copies that
+# ship with every version live in launcher/. A copy that still has the OLD launcher (the one that opens runtime.exe's black
+# "Do you want to revert?" console on every start) gets the new one: the app starts a hidden helper that waits until this
+# process AND the batch file / runtime.exe that started it have ended, and only then swaps the files.
+
+LAUNCHER_DIR = "launcher"
+
+_LAUNCHER_PS1 = r"""
+param([string]$Ids, [string]$Pairs)
+$list = @($Ids.Split(',') | ForEach-Object { [int]$_ })
+Wait-Process -Id $list -Timeout 30000 -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 800
+foreach ($pair in $Pairs.Split(';')) {
+  $src, $dst = $pair.Split('|')
+  $text = ([IO.File]::ReadAllText($src)) -replace "`r?`n", "`r`n"
+  [IO.File]::WriteAllText($dst, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+"""
+
+
+def _launcher_pids() -> List[int]:
+    """This process plus the chain of parents that belong to a launcher (cmd.exe running the batch file, runtime.exe,
+    the venv's python.exe stub). The batch file must not change while any of them is alive."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ENTRY(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    snap = k32.CreateToolhelp32Snapshot(2, 0)            # TH32CS_SNAPPROCESS
+    table = {}
+    try:
+        entry = ENTRY(); entry.dwSize = ctypes.sizeof(ENTRY)
+        ok = k32.Process32FirstW(ctypes.c_void_p(snap), ctypes.byref(entry))
+        while ok:
+            table[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile.lower())
+            ok = k32.Process32NextW(ctypes.c_void_p(snap), ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(ctypes.c_void_p(snap))
+    ids, cur = [os.getpid()], os.getpid()
+    for _ in range(6):
+        parent = table.get(cur, (0, ""))[0]
+        if parent not in table or table[parent][1] not in ("cmd.exe", "runtime.exe", "python.exe", "pythonw.exe"):
+            break
+        ids.append(parent)
+        cur = parent
+    return ids
+
+
+def _same_text(a: Path, b: Path) -> bool:
+    try:
+        crlf, lf = bytes([13, 10]), bytes([10])
+        return a.read_bytes().replace(crlf, lf) == b.read_bytes().replace(crlf, lf)
+    except OSError:
+        return False
+
+
+def outdated_launchers() -> List[Path]:
+    """The launcher/*.cmd files whose installed copy in the app folder differs (or is missing)."""
+    src_dir = APP_ROOT / LAUNCHER_DIR
+    if not src_dir.is_dir():
+        return []
+    return [f for f in sorted(src_dir.glob("*.cmd")) if not _same_text(f, APP_ROOT / f.name)]
+
+
+def sync_launchers() -> List[str]:
+    """Start-up: if the installed launcher scripts are older than the ones shipped in launcher/, schedule the swap
+    (done by a hidden helper after every process using them has ended). Returns the names scheduled."""
+    stale = outdated_launchers()
+    if not stale:
+        return []
+    try:
+        script = Path(tempfile.gettempdir()) / "dinosaurlist-launcher-sync.ps1"
+        script.write_text(_LAUNCHER_PS1, encoding="utf-8")
+        pairs = ";".join(f"{f}|{APP_ROOT / f.name}" for f in stale)
+        subprocess.Popen(["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                          "-File", str(script), "-Ids", ",".join(map(str, _launcher_pids())), "-Pairs", pairs],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    except OSError:
+        return []
+    return [f.name for f in stale]
+
+
 # ── restart ──────────────────────────────────────────────────────────────────────
 
 _DEPS_WINDOW_PS1 = r"""
