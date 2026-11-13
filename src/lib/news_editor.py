@@ -7,6 +7,7 @@ config-record/news-edited.html and leaves edit mode; Cancel throws the changes a
 from News/news.md. The edited copy is purely local - it never touches news.md.
 """
 
+import hashlib
 from pathlib import Path
 from typing import Callable
 
@@ -379,7 +380,8 @@ class NewsEditor(QWidget):
     def _save_and_stop(self):
         try:
             self._file.parent.mkdir(parents=True, exist_ok=True)
-            self._file.write_text(self.edit.toHtml(), encoding="utf-8")
+            # The edit remembers which published text it was made from (see _load)
+            self._file.write_text(self._marker(self._default_html()) + chr(10) + self.edit.toHtml(), encoding="utf-8")
         except Exception as exc:
             self._warn("News & Updates", f"Could not save the text: {exc}", QMessageBox.Critical)
             return
@@ -389,14 +391,25 @@ class NewsEditor(QWidget):
         self._load()
         self._stop_edit()
 
+    @staticmethod
+    def _marker(default_html: str) -> str:
+        return f"<!-- dino-news:{hashlib.sha1(default_html.encode('utf-8')).hexdigest()[:16]} -->"
+
     def _load(self):
+        """Show the edited copy ONLY while it still belongs to the published text it was made from. A copy saved before this
+        rule (no marker) or made from an older News/news.md or an older app version is out of date: it used to hide every
+        later change for good (a copy that had been committed to the repository froze News & Updates on users' PCs)."""
+        default = self._default_html()
         try:
             if self._file.exists():
-                self.edit.setHtml(self._file.read_text(encoding="utf-8"))
-                return
+                text = self._file.read_text(encoding="utf-8")
+                if text.startswith(self._marker(default)):
+                    self.edit.setHtml(text)
+                    return
+                self._hint.setText("News & Updates was published again - your earlier edit was set aside")
         except Exception:
             pass                      # fall through to the original text
-        self.edit.setHtml(self._default_html())
+        self.edit.setHtml(default)
 
     def _reset(self):
         box = QMessageBox(self.window())

@@ -215,3 +215,11 @@ __marimo__/
 BoxFast/obj/
 BoxFast/bin/
 .update-backup/
+
+# Per-PC files the app writes by itself. They must never be committed: an install/update would hand one person's copy to everybody
+# (a committed news-edited.html froze News & Updates on users' PCs; update.json may hold a GitHub token).
+config-record/news-edited.html
+config-record/dev_profile.json
+config-record/dev_activity.json
+config-record/update.json
+config-record/console_setting.json
