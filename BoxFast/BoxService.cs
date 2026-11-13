@@ -128,12 +128,25 @@ public sealed class BoxService
 
     /// <summary>"writeText": creates the file in the folder, or uploads a new version when a file with that name is already
     /// there (the file id stays the same and Box keeps the older versions).</summary>
-    public Task<JsonObject> WriteTextAsync(string folderId, string name, string text) =>
-        WriteBytesAsync(folderId, name, new System.Text.UTF8Encoding(false).GetBytes(text));
+    public Task<JsonObject> WriteTextAsync(string folderId, string name, string text, string? knownFileId = null) =>
+        WriteBytesAsync(folderId, name, new System.Text.UTF8Encoding(false).GetBytes(text), knownFileId);
 
     /// <summary>"writeBytes": same as writeText for any content (Dev Profile photos).</summary>
-    public async Task<JsonObject> WriteBytesAsync(string folderId, string name, byte[] bytes)
+    public async Task<JsonObject> WriteBytesAsync(string folderId, string name, byte[] bytes, string? knownFileId = null)
     {
+        // The caller already knows the file (it saved it before): upload the new version directly - one Box call instead of
+        // three. If that file is gone, fall through to the normal "find it or create it" path below.
+        if (!string.IsNullOrEmpty(knownFileId))
+        {
+            try
+            {
+                var client = await GetClientAsync();
+                using var direct = new MemoryStream(bytes);
+                var f = await client.FilesManager.UploadNewVersionAsync(name, knownFileId, direct, fields: new List<string> { "name", "modified_at", "modified_by" });
+                return new JsonObject { ["id"] = f.Id, ["name"] = f.Name, ["created"] = false, ["modified_at"] = f.ModifiedAt?.ToString("o"), ["modified_by"] = f.ModifiedBy?.Name };
+            }
+            catch { /* not there any more (or Box said no): the slow path decides */ }
+        }
         var entries = await WithRetryAsync(async c =>
             (await c.FoldersManager.GetFolderItemsAsync(folderId, 1000, autoPaginate: true, fields: new[] { "name" })).Entries);
         var existing = entries.FirstOrDefault(e => e.Type == "file" && string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));

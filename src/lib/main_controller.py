@@ -5,6 +5,7 @@ MainWindow - Main application window controller
 import os
 import sys
 import json
+import time
 import webbrowser
 from pathlib import Path
 from threading import Thread
@@ -2304,6 +2305,8 @@ class MainWindow(QMainWindow):
             try:
                 from .dev_profile import shared_store
                 shared_store().all_apps()
+                time.sleep(2)                       # let the window settle first, then read everybody's Box data
+                shared_store().warm()
             except Exception:
                 pass
         Thread(target=work, daemon=True, name="DevProfilePrefetch").start()

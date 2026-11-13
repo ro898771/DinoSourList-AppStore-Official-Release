@@ -95,17 +95,21 @@ class BoxLinkAPI:
         ok, data, err = self._fast('readText', timeout=30, fileId=file_id)
         return (True, str((data or {}).get('text', '')), "") if ok else (False, "", err)
 
-    def write_text(self, folder_id: str, name: str, text: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
-        """Create (or upload a new version of) a small text file in a Box folder."""
-        return self._fast('writeText', timeout=60, folderId=folder_id, name=name, text=text)
+    def write_text(self, folder_id: str, name: str, text: str, file_id: Optional[str] = None) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """Create (or upload a new version of) a small text file in a Box folder. *file_id*: the file's id when the caller
+        already knows it - saves BoxFast two Box calls."""
+        extra = {'fileId': file_id} if file_id else {}
+        return self._fast('writeText', timeout=60, folderId=folder_id, name=name, text=text, **extra)
 
     def delete_file(self, file_id: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         return self._fast('deleteFile', timeout=30, fileId=file_id)
 
-    def write_bytes(self, folder_id: str, name: str, data: bytes) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    def write_bytes(self, folder_id: str, name: str, data: bytes, file_id: Optional[str] = None) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         """Create (or upload a new version of) a small binary file in a Box folder (BoxFast only)."""
         import base64
-        return self._fast('writeBytes', timeout=90, folderId=folder_id, name=name, data=base64.b64encode(data).decode("ascii"))
+        extra = {'fileId': file_id} if file_id else {}
+        return self._fast('writeBytes', timeout=90, folderId=folder_id, name=name,
+                          data=base64.b64encode(data).decode("ascii"), **extra)
 
     def ensure_folder(self, parent_id: str, name: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         """The id of sub-folder *name* of *parent_id*, creating it if needed (BoxFast only)."""

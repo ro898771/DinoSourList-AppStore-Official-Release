@@ -113,7 +113,7 @@ def _headers() -> dict:
 
 def _explain(status: int) -> str:
     if status == 404:
-        return (f"GitHub says Not Found for {repo()}. " +
+        return ("GitHub says Not Found. " +
                 ("The repository name/branch is wrong, or the token has no access to it." if _token() else
                  "The repository is private (or does not exist). Put a read-only token in config-record/update.json."))
     if status == 401:

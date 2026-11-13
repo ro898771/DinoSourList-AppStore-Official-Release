@@ -88,7 +88,7 @@ class UpdateDashboard(QWidget):
 
         self._title = QLabel("Checking for updates")
         self._title.setStyleSheet("font-size: 18px; font-weight: bold; color: #111827;")
-        self._sub = QLabel(f"github.com/{updater.repo()} · {updater.branch()}")
+        self._sub = QLabel("Update from GitHub")
         self._sub.setStyleSheet("font-size: 12px; color: #6b7280;")
         titles = QVBoxLayout()
         titles.setSpacing(2)

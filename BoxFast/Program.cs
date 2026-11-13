@@ -64,12 +64,12 @@ async Task HandleAsync(JsonObject req)
             case "writetext":
                 Reply(id, true, await box.WriteTextAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing"),
                                                         Str(req, "name") ?? throw new ArgumentException("name missing"),
-                                                        Str(req, "text") ?? ""), null);
+                                                        Str(req, "text") ?? "", Str(req, "fileId")), null);
                 break;
             case "writebytes":
                 Reply(id, true, await box.WriteBytesAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing"),
                                                          Str(req, "name") ?? throw new ArgumentException("name missing"),
-                                                         Convert.FromBase64String(Str(req, "data") ?? "")), null);
+                                                         Convert.FromBase64String(Str(req, "data") ?? ""), Str(req, "fileId")), null);
                 break;
             case "ensurefolder":
                 Reply(id, true, await box.EnsureFolderAsync(Str(req, "parentId") ?? throw new ArgumentException("parentId missing"),

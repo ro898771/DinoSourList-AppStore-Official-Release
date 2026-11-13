@@ -19,6 +19,7 @@ import json
 import math
 import os
 import random
+from concurrent.futures import ThreadPoolExecutor
 import re
 import threading
 import time
@@ -150,6 +151,9 @@ class ProfileStore:
         self._rescan_thread: Optional[threading.Thread] = None
         self._rescan_wanted = False
         self._memo: dict = {}                         # (author, ...) -> what activity() worked out
+        self._folder_id: Optional[str] = None         # the hidden Box folder, once found (saves a root listing per call)
+        self._ids: Dict[str, str] = {}                # file name (lower case) -> Box file id, for direct uploads
+        self._cache_lock = threading.RLock()          # the local message/links caches are read-modify-written from threads
         self.version = 0                              # +1 whenever the application list was re-read
         # Photos are a cache of what is in Box, kept outside the repository folder (nothing for git to see).
         base = os.environ.get("LOCALAPPDATA")
@@ -258,7 +262,10 @@ class ProfileStore:
         return BoxLinkAPI()
 
     def _data_folder(self, api, create: bool = False):
-        """(folder id or None, {legacy file name (lower case): file id}). Raises when Box cannot be reached."""
+        """(folder id or None, {legacy file name (lower case): file id}). Raises when Box cannot be reached.
+        Once the folder is known it is remembered: no listing of the Box root is needed again in this session."""
+        if self._folder_id:
+            return self._folder_id, {}
         ok, data, err = api.list_folder_dict(self._box_root(), include_hidden=True)
         if not ok or not data:
             raise OSError(err or "Box could not be listed")
@@ -270,8 +277,19 @@ class ProfileStore:
             ok, made, err = api.ensure_folder(self._box_root(), DATA_FOLDER)
             if not ok or not made:
                 raise OSError(err or "Box would not create the folder")
-            return str(made["id"]), legacy
+            self._folder_id = str(made["id"])
+            return self._folder_id, legacy
+        if folder:
+            self._folder_id = str(folder["id"])
         return (str(folder["id"]) if folder else None), legacy
+
+    def _remember(self, items=None, written=None) -> None:
+        """Keep the Box file ids we have seen, so the next save goes straight to the file."""
+        for i in items or []:
+            if i.get("type") == "file" and i.get("id"):
+                self._ids[str(i.get("name", "")).lower()] = str(i["id"])
+        if isinstance(written, dict) and written.get("id") and written.get("name"):
+            self._ids[str(written["name"]).lower()] = str(written["id"])
 
     # local copy of the message
     def _read_tweets(self) -> dict:
@@ -299,10 +317,11 @@ class ProfileStore:
 
     def set_tweet(self, author: str, text: str) -> None:
         """Save locally and mark it as waiting for Box (push_tweet sends it)."""
-        data = self._read_tweets()
-        data[author] = {"tweet": text.strip()[:TWEET_LIMIT], "updated": datetime.now().isoformat(timespec="seconds"),
-                        "pending": True}
-        self._write_tweets(data)
+        with self._cache_lock:
+            data = self._read_tweets()
+            data[author] = {"tweet": text.strip()[:TWEET_LIMIT], "updated": datetime.now().isoformat(timespec="seconds"),
+                            "pending": True}
+            self._write_tweets(data)
 
     def push_tweet(self, author: str) -> Tuple[bool, str]:
         """Send this PC's waiting message to Box (create the file, or a new version of it). (ok, error)."""
@@ -313,15 +332,19 @@ class ProfileStore:
             api = self._api()
             folder, _legacy = self._data_folder(api, create=True)
             body = {"author": author, "tweet": entry.get("tweet", ""), "updated": entry.get("updated", "")}
-            ok, _data, err = api.write_text(folder, self.box_file_name(author), json.dumps(body, indent=2, ensure_ascii=False))
+            name = self.box_file_name(author)
+            ok, written, err = api.write_text(folder, name, json.dumps(body, indent=2, ensure_ascii=False),
+                                              file_id=self._ids.get(name.lower()))
         except Exception as exc:
             return False, str(exc)
         if ok:
-            data = self._read_tweets()
-            if data.get(author) == entry:                      # not edited again while it was being sent
-                entry.pop("pending", None)
-                data[author] = entry
-                self._write_tweets(data)
+            self._remember(written=written)
+            with self._cache_lock:
+                data = self._read_tweets()
+                if data.get(author) == entry:                  # not edited again while it was being sent
+                    entry.pop("pending", None)
+                    data[author] = entry
+                    self._write_tweets(data)
             return True, ""
         return False, err or "Box did not accept the file"
 
@@ -342,9 +365,10 @@ class ProfileStore:
 
     def set_links(self, author: str, links: List[dict]) -> None:
         """Save locally and mark as waiting for Box (push_links sends it)."""
-        data = self._read_links()
-        data[author] = {"links": list(links)[:MAX_LINKS], "updated": datetime.now().isoformat(timespec="seconds"), "pending": True}
-        self._write_links(data)
+        with self._cache_lock:
+            data = self._read_links()
+            data[author] = {"links": list(links)[:MAX_LINKS], "updated": datetime.now().isoformat(timespec="seconds"), "pending": True}
+            self._write_links(data)
 
     def push_links(self, author: str) -> Tuple[bool, str]:
         entry = self._read_links().get(author)
@@ -354,15 +378,19 @@ class ProfileStore:
             api = self._api()
             folder, _legacy = self._data_folder(api, create=True)
             body = {"author": author, "links": entry.get("links", []), "updated": entry.get("updated", "")}
-            ok, _d, err = api.write_text(folder, self.links_file_name(author), json.dumps(body, indent=2, ensure_ascii=False))
+            name = self.links_file_name(author)
+            ok, written, err = api.write_text(folder, name, json.dumps(body, indent=2, ensure_ascii=False),
+                                              file_id=self._ids.get(name.lower()))
         except Exception as exc:
             return False, str(exc)
         if ok:
-            data = self._read_links()
-            if data.get(author) == entry:
-                entry.pop("pending", None)
-                data[author] = entry
-                self._write_links(data)
+            self._remember(written=written)
+            with self._cache_lock:
+                data = self._read_links()
+                if data.get(author) == entry:
+                    entry.pop("pending", None)
+                    data[author] = entry
+                    self._write_links(data)
             return True, ""
         return False, err or "Box did not accept the file"
 
@@ -390,10 +418,12 @@ class ProfileStore:
             data = path.read_bytes()
             api = self._api()
             folder, _legacy = self._data_folder(api, create=True)
-            ok, _d, err = api.write_bytes(folder, self.photo_file_name(author), data)
+            name = self.photo_file_name(author)
+            ok, written, err = api.write_bytes(folder, name, data, file_id=self._ids.get(name.lower()))
         except Exception as exc:
             return False, str(exc)
         if ok:
+            self._remember(written=written)
             if path.read_bytes() == data:                      # not replaced again while it was being sent
                 try:
                     self._photo_pending(author).unlink()
@@ -438,8 +468,13 @@ class ProfileStore:
             files = {}
             if folder:
                 ok, data, _err = api.list_folder_dict(folder, include_hidden=True)
+                if (not ok or not data) and self._folder_id:      # the remembered folder is gone? look from the root again
+                    self._folder_id = None
+                    folder, legacy = self._data_folder(api)
+                    ok, data, _err = api.list_folder_dict(folder, include_hidden=True) if folder else (True, {"items": []}, "")
                 if not ok or not data:
                     return out
+                self._remember(data.get("items", []))
                 files = {str(i.get("name", "")).lower(): i for i in data.get("items", []) if i.get("type") == "file"}
 
             # 2. the message (a loose file from the first version of this feature is moved into the folder)
@@ -455,46 +490,76 @@ class ProfileStore:
                     if self.push_tweet(author)[0]:
                         api.delete_file(old_id)                  # only after the copy in the folder is safe
                         return self.sync_profile(author)          # the message is in the folder now: start again
-            if item is not None:
-                ok, text, _err = api.read_text(item["id"])
+            # the message, the Jira links and the photo are independent files: fetch them AT THE SAME TIME
+            litem = files.get(self.links_file_name(author).lower())
+            pitem = files.get(self.photo_file_name(author).lower())
+            if pitem is not None:
+                self.photo_dir.mkdir(parents=True, exist_ok=True)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                f_tweet = pool.submit(api.read_text, item["id"]) if item is not None else None
+                f_links = pool.submit(api.read_text, litem["id"]) if litem is not None else None
+                f_photo = (pool.submit(api.download_small_dict, pitem["id"], str(self.photo_dir), self.photo_file_name(author),
+                                       pitem.get("sha1")) if pitem is not None else None)
+                tweet_res = f_tweet.result() if f_tweet else None
+                links_res = f_links.result() if f_links else None
+                photo_res = f_photo.result() if f_photo else None
+
+            # 2. the message
+            if tweet_res is not None:
+                ok, text, _err = tweet_res
                 remote = json.loads(text) if ok else None
                 if isinstance(remote, dict):
-                    cache = self._read_tweets()
-                    cache[author] = {"tweet": str(remote.get("tweet", ""))[:TWEET_LIMIT], "updated": str(remote.get("updated", ""))}
-                    self._write_tweets(cache)
+                    with self._cache_lock:
+                        cache = self._read_tweets()
+                        cache[author] = {"tweet": str(remote.get("tweet", ""))[:TWEET_LIMIT], "updated": str(remote.get("updated", ""))}
+                        self._write_tweets(cache)
                     out["tweet"], out["updated"] = cache[author]["tweet"], cache[author]["updated"]
                     out["state"] = "synced"
             elif out["state"] == "offline":
                 out["state"] = "none"
 
             # 2b. the Jira links
-            litem = files.get(self.links_file_name(author).lower())
-            if litem is not None:
-                ok, text, _err = api.read_text(litem["id"])
+            if links_res is not None:
+                ok, text, _err = links_res
                 remote = json.loads(text) if ok else None
                 if isinstance(remote, dict) and isinstance(remote.get("links"), list):
                     good = [l for l in (normalize_link(x.get("url", ""), x.get("title", "")) for x in remote["links"]
                                         if isinstance(x, dict)) if l][:MAX_LINKS]
-                    cache = self._read_links()
-                    cache[author] = {"links": good, "updated": str(remote.get("updated", ""))}
-                    self._write_links(cache)
+                    with self._cache_lock:
+                        cache = self._read_links()
+                        cache[author] = {"links": good, "updated": str(remote.get("updated", ""))}
+                        self._write_links(cache)
                     out["links"] = good
                     if out["state"] != "synced":
                         out["state"] = "synced"
 
             # 3. the photo (downloaded only when Box's copy differs from the cached one)
-            pitem = files.get(self.photo_file_name(author).lower())
-            if pitem is not None:
-                self.photo_dir.mkdir(parents=True, exist_ok=True)
-                ok, _d, _err = api.download_small_dict(pitem["id"], str(self.photo_dir), self.photo_file_name(author), pitem.get("sha1"))
-                if ok:
-                    out["photo"] = self.photo_path(author)
-                    out["state"] = "synced"
+            if photo_res is not None and photo_res[0]:
+                out["photo"] = self.photo_path(author)
+                out["state"] = "synced"
         except Exception:
             return out
         if sent:
             out["state"] = "saved"
         return out
+
+    def warm(self) -> None:
+        """Fetch every developer's message, links and photo in the background (a few at a time) so that choosing a developer
+        later shows them at once instead of after a Box round trip. The first call also finds the hidden folder; the rest
+        then skip the root listing."""
+        devs = self.developers()
+        if not devs:
+            return
+
+        def one(dev):
+            try:
+                self.sync_profile(dev)
+            except Exception:
+                pass
+
+        one(devs[0])
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(one, devs[1:]))
 
     def sync_tweet(self, author: str) -> Tuple[str, str, str]:
         """Message only: (state, text, updated_iso) - see sync_profile."""

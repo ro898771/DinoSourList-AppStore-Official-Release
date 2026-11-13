@@ -44,7 +44,7 @@ class RevertPanel(QWidget):
         self._commits: List[updater.Commit] = []
         self._local = updater.read_local_sha()
 
-        hint = QLabel(f"Pick one of the most recent versions of github.com/{updater.repo()} ({updater.branch()}). "
+        hint = QLabel("Pick one of the most recent versions from GitHub. "
                       "The app restarts afterwards. Your downloaded software, favourites and settings are kept.")
         hint.setObjectName("hint"); hint.setWordWrap(True)
         self._list = QListWidget()
