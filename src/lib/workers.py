@@ -522,6 +522,66 @@ class DownloadInstallWorker(QObject):
 
         return auto, install_filename
 
+    def _flow_section(self, section):
+        """The key=value pairs (keys lower-cased) of one [section] of this software's App_Store Flow.txt."""
+        flow_txt = self.software_path.parent / "App_Store" / f"{self.software_name}-{self.author_name}" / "Flow.txt"
+        values, current = {}, None
+        try:
+            with open(flow_txt, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('[') and line.endswith(']'):
+                        current = line[1:-1].lower()
+                    elif current == section and '=' in line:
+                        key, _, value = line.partition('=')
+                        values[key.strip().lower()] = value.strip()
+        except OSError:
+            pass
+        return values
+
+    def _uninstall_previous(self, existing_folder):
+        """An .msi-installed program cannot be updated or downgraded by installing another version on top of it
+        ("Another version of this product is already installed"): the old version must be uninstalled first.
+        Returns None to go on, or an error message to stop (the user cancelled the uninstall).
+
+        The OLD version's own .msi uninstalls it most reliably (it carries the product code that is installed). It must
+        happen before the old folder is renamed/cleared. If that file is gone, [Delete] idname (winget) is the fallback.
+        """
+        install = self._flow_section('installation')
+        name = install.get('file', '')
+        if install.get('auto', '').lower() != 'true' or not name.lower().endswith('.msi'):
+            return None                                   # not an MSI install: nothing to uninstall first
+
+        old_msi = existing_folder / name
+        if old_msi.exists():
+            self.progress.emit(f"Uninstalling the previous version of {self.software_name} first (Windows Installer)...")
+            try:
+                proc = subprocess.run(['msiexec', '/x', str(old_msi), '/passive', '/norestart'], timeout=900)
+            except Exception as e:
+                self.progress.emit(f"  ⚠ Could not run the uninstaller: {e}")
+                return None
+            code = proc.returncode
+            if code in (0, 1605, 1641, 3010):             # done / was not installed / done + restart pending
+                self.progress.emit("  ✓ Previous version uninstalled" if code != 1605 else "  ✓ No previous installation found")
+                return None
+            if code == 1602:
+                return "Update cancelled: the previous version was not uninstalled."
+            self.progress.emit(f"  ⚠ Uninstall finished with code {code} - continuing anyway")
+            return None
+
+        delete = self._flow_section('delete')
+        idname = delete.get('idname')
+        if delete.get('auto', '').lower() == 'true' and idname:
+            self.progress.emit(f"Uninstalling the previous version of {self.software_name} first (winget)...")
+            try:
+                proc = subprocess.run(['winget', 'uninstall', idname, '--silent', '--accept-source-agreements'],
+                                      capture_output=True, text=True, timeout=300)
+                self.progress.emit("  ✓ Previous version uninstalled" if proc.returncode == 0
+                                   else f"  ⚠ winget uninstall exited with code {proc.returncode} - continuing anyway")
+            except Exception as e:
+                self.progress.emit(f"  ⚠ winget uninstall failed: {e} - continuing anyway")
+        return None
+
     def _run_installation(self, target_folder):
         """Run the installation script defined in Flow.txt [Installation] if Auto=True.
 
@@ -654,6 +714,13 @@ class DownloadInstallWorker(QObject):
                             existing_folder = folder
                             break
             
+            # MSI-installed software: the installed (old) version must be uninstalled before the new one goes in
+            if existing_folder:
+                cancelled = self._uninstall_previous(existing_folder)
+                if cancelled:
+                    self.finished.emit(False, cancelled)
+                    return
+
             # Create new target folder name: Name-V-version_A-Author
             # Example: QuickMi2e-V-6.1.0.0_A-RoeyYee (hyphen before V)
             version_clean = self.version.replace('v', '')  # Remove 'v' prefix
