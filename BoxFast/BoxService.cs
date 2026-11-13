@@ -22,6 +22,8 @@ public sealed class BoxService
     private const long MinSegmentedSize = 4L * 1024 * 1024;
     private const int BufferSize = 1024 * 1024;
     private static readonly string[] ItemFields = ["name", "sha1", "etag", "sequence_id", "size"];
+    // Only fetched when the caller asks ("dates": true): who uploaded a file and when (Dev Profile's activity calendar).
+    private static readonly string[] ItemFieldsWithDates = ["name", "sha1", "etag", "sequence_id", "size", "created_at", "modified_at", "created_by", "modified_by"];
 
     public static BoxService Instance { get; } = new();
 
@@ -103,13 +105,87 @@ public sealed class BoxService
         throw new InvalidOperationException(last?.Message ?? "Box request failed", last);
     }
 
+    // ── Small text files (Dev Profile's pinned message lives in one per developer) ────────────────────────────
+
+    /// <summary>"canUpload": whether the account the app uses may add files to the folder (read-only question).</summary>
+    public async Task<JsonObject> CanUploadAsync(string folderId)
+    {
+        var f = await WithRetryAsync(c => c.FoldersManager.GetInformationAsync(folderId, new[] { "name", "permissions" }));
+        return new JsonObject { ["folder_id"] = folderId, ["name"] = f.Name, ["can_upload"] = f.Permissions?.CanUpload ?? false };
+    }
+
+    /// <summary>"readText": the content of a small text file.</summary>
+    public async Task<JsonObject> ReadTextAsync(string fileId)
+    {
+        var text = await WithRetryAsync(async c =>
+        {
+            using var s = await c.FilesManager.DownloadAsync(fileId);
+            using var r = new StreamReader(s, System.Text.Encoding.UTF8);
+            return await r.ReadToEndAsync();
+        });
+        return new JsonObject { ["file_id"] = fileId, ["text"] = text };
+    }
+
+    /// <summary>"writeText": creates the file in the folder, or uploads a new version when a file with that name is already
+    /// there (the file id stays the same and Box keeps the older versions).</summary>
+    public Task<JsonObject> WriteTextAsync(string folderId, string name, string text) =>
+        WriteBytesAsync(folderId, name, new System.Text.UTF8Encoding(false).GetBytes(text));
+
+    /// <summary>"writeBytes": same as writeText for any content (Dev Profile photos).</summary>
+    public async Task<JsonObject> WriteBytesAsync(string folderId, string name, byte[] bytes)
+    {
+        var entries = await WithRetryAsync(async c =>
+            (await c.FoldersManager.GetFolderItemsAsync(folderId, 1000, autoPaginate: true, fields: new[] { "name" })).Entries);
+        var existing = entries.FirstOrDefault(e => e.Type == "file" && string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+        var file = await WithRetryAsync(async c =>
+        {
+            using var ms = new MemoryStream(bytes);
+            if (existing is not null)
+                return await c.FilesManager.UploadNewVersionAsync(name, existing.Id, ms, fields: new List<string> { "name", "modified_at", "modified_by" });
+            var req = new BoxFileRequest { Name = name, Parent = new BoxRequestEntity { Id = folderId } };
+            return await c.FilesManager.UploadAsync(req, ms, new List<string> { "name", "modified_at", "modified_by" });
+        });
+        return new JsonObject
+        {
+            ["id"] = file.Id, ["name"] = file.Name, ["created"] = existing is null,
+            ["modified_at"] = file.ModifiedAt?.ToString("o"), ["modified_by"] = file.ModifiedBy?.Name,
+        };
+    }
+
+    /// <summary>"ensureFolder": the id of the sub-folder *name* of *parentId*, creating it when it is not there yet.</summary>
+    public async Task<JsonObject> EnsureFolderAsync(string parentId, string name)
+    {
+        var entries = await WithRetryAsync(async c =>
+            (await c.FoldersManager.GetFolderItemsAsync(parentId, 1000, autoPaginate: true, fields: new[] { "name" })).Entries);
+        var existing = entries.FirstOrDefault(e => e.Type == "folder" && string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) return new JsonObject { ["id"] = existing.Id, ["name"] = existing.Name, ["created"] = false };
+        var folder = await WithRetryAsync(c => c.FoldersManager.CreateAsync(
+            new BoxFolderRequest { Name = name, Parent = new BoxRequestEntity { Id = parentId } }));
+        return new JsonObject { ["id"] = folder.Id, ["name"] = folder.Name, ["created"] = true };
+    }
+
+    /// <summary>"deleteFolder": removes a folder with everything in it (only used to clean up the self-test).</summary>
+    public async Task<JsonObject> DeleteFolderAsync(string folderId)
+    {
+        await WithRetryAsync(async c => { await c.FoldersManager.DeleteAsync(folderId, recursive: true); return true; });
+        return new JsonObject { ["deleted"] = folderId };
+    }
+
+    /// <summary>"deleteFile": removes a file (used to clean up the self-test file).</summary>
+    public async Task<JsonObject> DeleteFileAsync(string fileId)
+    {
+        await WithRetryAsync(async c => { await c.FilesManager.DeleteAsync(fileId); return true; });
+        return new JsonObject { ["deleted"] = fileId };
+    }
+
     // ── Listing ──────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>"list": {folder_id,total_items,items[{type,id,name,sha1?}],summary,status}.</summary>
-    public async Task<JsonObject> ListFolderAsync(string folderId)
+    public async Task<JsonObject> ListFolderAsync(string folderId, bool dates = false)
     {
+        var fields = dates ? ItemFieldsWithDates : ItemFields;
         var entries = await WithRetryAsync(async c =>
-            (await c.FoldersManager.GetFolderItemsAsync(folderId, 100, autoPaginate: true, fields: ItemFields)).Entries);
+            (await c.FoldersManager.GetFolderItemsAsync(folderId, 100, autoPaginate: true, fields: fields)).Entries);
 
         var items = new JsonArray();
         int files = 0, folders = 0;
@@ -120,6 +196,13 @@ public sealed class BoxService
             else if (e.Type == "folder") folders++;
             var li = new JsonObject { ["type"] = e.Type, ["id"] = e.Id, ["name"] = e.Name };
             if (e is BoxFile bf && !string.IsNullOrEmpty(bf.Sha1)) li["sha1"] = bf.Sha1;
+            if (dates && e is BoxFile df)
+            {
+                if (df.CreatedAt != null) li["created_at"] = df.CreatedAt.Value.ToString("o");
+                if (df.ModifiedAt != null) li["modified_at"] = df.ModifiedAt.Value.ToString("o");
+                if (!string.IsNullOrEmpty(df.CreatedBy?.Name)) li["created_by"] = df.CreatedBy!.Name;
+                if (!string.IsNullOrEmpty(df.ModifiedBy?.Name)) li["modified_by"] = df.ModifiedBy!.Name;
+            }
             items.Add(li);
         }
         return new JsonObject

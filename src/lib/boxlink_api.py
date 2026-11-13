@@ -35,6 +35,26 @@ def is_dotnet_missing_error(error: str) -> bool:
     return "you must install .net" in text or ".net location: not found" in text
 
 
+HIDDEN_PREFIX = ".devprofile-"      # Dev Profile's per-developer files in the Box root: invisible to Refresh/Store/Local
+
+
+def _drop_hidden(data):
+    """Remove the app's own hidden files from a folder listing (and fix its counters), so nothing downstream - record.json,
+    the Store, the Local list, the clean-up of old folders - ever sees them."""
+    if isinstance(data, dict) and isinstance(data.get('items'), list):
+        kept = [i for i in data['items'] if not str(i.get('name', '')).startswith(HIDDEN_PREFIX)]
+        removed = len(data['items']) - len(kept)
+        if removed:
+            data['items'] = kept
+            for key in ('item_count', 'total_items'):
+                if isinstance(data.get(key), int):
+                    data[key] -= removed
+            summary = data.get('summary')
+            if isinstance(summary, dict) and isinstance(summary.get('files'), int):
+                summary['files'] -= removed
+    return data
+
+
 class BoxLinkAPI:
     """Interface for interacting with BoxAutomate.exe"""
 
@@ -69,6 +89,27 @@ class BoxLinkAPI:
         waits for the start-up already kicked off by warm_up() instead of guessing)."""
         d = BoxDaemon.instance()
         return d.available() and d.ready()
+
+    def read_text(self, file_id: str) -> Tuple[bool, str, str]:
+        """(ok, text, error): the content of a small text file in Box."""
+        ok, data, err = self._fast('readText', timeout=30, fileId=file_id)
+        return (True, str((data or {}).get('text', '')), "") if ok else (False, "", err)
+
+    def write_text(self, folder_id: str, name: str, text: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """Create (or upload a new version of) a small text file in a Box folder."""
+        return self._fast('writeText', timeout=60, folderId=folder_id, name=name, text=text)
+
+    def delete_file(self, file_id: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        return self._fast('deleteFile', timeout=30, fileId=file_id)
+
+    def write_bytes(self, folder_id: str, name: str, data: bytes) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """Create (or upload a new version of) a small binary file in a Box folder (BoxFast only)."""
+        import base64
+        return self._fast('writeBytes', timeout=90, folderId=folder_id, name=name, data=base64.b64encode(data).decode("ascii"))
+
+    def ensure_folder(self, parent_id: str, name: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """The id of sub-folder *name* of *parent_id*, creating it if needed (BoxFast only)."""
+        return self._fast('ensureFolder', timeout=60, parentId=parent_id, name=name)
 
     def _fast(self, cmd: str, timeout: Optional[float] = 120, **fields) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         """One BoxFast request; (False, None, why) if the helper is unavailable or the call failed."""
@@ -271,7 +312,7 @@ class BoxLinkAPI:
         """
         ok, data, _ = self._fast('getInfoDefault')
         if ok:
-            return True, data, ""
+            return True, _drop_hidden(data), ""
 
         success, output, error = self.call_command('getInfoDefault')
         
@@ -280,7 +321,7 @@ class BoxLinkAPI:
         
         try:
             parsed_data = self._parse_info_output(output)
-            return True, parsed_data, ""
+            return True, _drop_hidden(parsed_data), ""
         except Exception as e:
             return False, None, f"Error parsing output: {str(e)}"
     
@@ -448,7 +489,7 @@ class BoxLinkAPI:
         """
         return self.call_command('list', folder_id)
     
-    def list_folder_dict(self, folder_id: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    def list_folder_dict(self, folder_id: str, include_hidden: bool = False) -> Tuple[bool, Optional[Dict[str, Any]], str]:
         """
         Call 'list' command with a specific folder ID and return parsed dictionary
         
@@ -469,9 +510,13 @@ class BoxLinkAPI:
                 for item in data['items']:
                     print(f"  - {item['name']} ({item['type']})")
         """
-        ok, data, _ = self._fast('list', folderId=folder_id)
+        ok, data, _ = self._fast('list', folderId=folder_id, dates=True)
         if ok:
-            return True, data, ""
+            # Upload dates/uploader go to App_Store/.box-dates.json and are removed from the listing, so record.json and
+            # the app metadata JSON keep their usual structure.
+            from . import box_dates
+            box_dates.absorb(data)
+            return True, (data if include_hidden else _drop_hidden(data)), ""
 
         success, output, error = self.call_command('list', folder_id)
         
@@ -480,7 +525,7 @@ class BoxLinkAPI:
         
         try:
             parsed_data = self._parse_list_output(output)
-            return True, parsed_data, ""
+            return True, (parsed_data if include_hidden else _drop_hidden(parsed_data)), ""
         except Exception as e:
             return False, None, f"Error parsing output: {str(e)}"
     

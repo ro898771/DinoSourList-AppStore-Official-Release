@@ -151,6 +151,7 @@ def main():
 
     window.show()
     app_log.log(f"Ready - window shown {time.perf_counter() - t_start:.1f}s after start")
+    window.prefetch_dev_profile()          # the Dev Profile tab then opens without touching the disk
     if dashboard is not None:
         dashboard.fade_out()
 

@@ -6,7 +6,9 @@ using BoxFast;
 // BoxFast: long-lived Box helper. One JSON request per stdin line, one JSON response per stdout line; requests run concurrently,
 // so responses can come back out of order (match them by "id"). EOF on stdin = the Python app is gone = exit.
 //   {"id":1,"cmd":"ping"}
-//   {"id":2,"cmd":"getInfoDefault"} | {"cmd":"getInfo","folderId":".."} | {"cmd":"list","folderId":".."}
+//   {"id":2,"cmd":"getInfoDefault"} | {"cmd":"getInfo","folderId":".."} | {"cmd":"list","folderId":"..","dates":true}
+//   {"cmd":"canUpload","folderId":".."} | {"cmd":"readText","fileId":".."} | {"cmd":"writeText","folderId":"..","name":"..","text":".."} | {"cmd":"deleteFile","fileId":".."}
+//   {"cmd":"writeBytes","folderId":"..","name":"..","data":"<base64>"} | {"cmd":"ensureFolder","parentId":"..","name":".."} | {"cmd":"deleteFolder","folderId":".."}
 //   {"id":3,"cmd":"download","fileId":"..","dest":"<dir>","sha1":"<optional>"}
 //   {"id":4,"cmd":"downloadSmall","fileId":"..","dest":"<dir>","name":"Flow.txt","sha1":"<optional>"}
 //   -> {"id":N,"ok":true,"data":{...}}  or  {"id":N,"ok":false,"error":"..."}
@@ -49,7 +51,35 @@ async Task HandleAsync(JsonObject req)
                 Reply(id, true, await box.GetInfoAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing")), null);
                 break;
             case "list":
-                Reply(id, true, await box.ListFolderAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing")), null);
+                // "dates":true adds created_at/modified_at/created_by/modified_by to each file; without it the reply is unchanged.
+                Reply(id, true, await box.ListFolderAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing"),
+                                                          req["dates"]?.GetValue<bool>() == true), null);
+                break;
+            case "canupload":
+                Reply(id, true, await box.CanUploadAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing")), null);
+                break;
+            case "readtext":
+                Reply(id, true, await box.ReadTextAsync(Str(req, "fileId") ?? throw new ArgumentException("fileId missing")), null);
+                break;
+            case "writetext":
+                Reply(id, true, await box.WriteTextAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing"),
+                                                        Str(req, "name") ?? throw new ArgumentException("name missing"),
+                                                        Str(req, "text") ?? ""), null);
+                break;
+            case "writebytes":
+                Reply(id, true, await box.WriteBytesAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing"),
+                                                         Str(req, "name") ?? throw new ArgumentException("name missing"),
+                                                         Convert.FromBase64String(Str(req, "data") ?? "")), null);
+                break;
+            case "ensurefolder":
+                Reply(id, true, await box.EnsureFolderAsync(Str(req, "parentId") ?? throw new ArgumentException("parentId missing"),
+                                                           Str(req, "name") ?? throw new ArgumentException("name missing")), null);
+                break;
+            case "deletefolder":
+                Reply(id, true, await box.DeleteFolderAsync(Str(req, "folderId") ?? throw new ArgumentException("folderId missing")), null);
+                break;
+            case "deletefile":
+                Reply(id, true, await box.DeleteFileAsync(Str(req, "fileId") ?? throw new ArgumentException("fileId missing")), null);
                 break;
             case "download":
             {

@@ -173,13 +173,19 @@ class MainWindow(QMainWindow):
         
         # Pagination settings
         self.current_page = 0
-        self.total_pages = 5
+        self.total_pages = 6
         self.cards_per_page = 8  # 2 rows x 4 columns
         self.all_software_data = []  # Store all software data
         self.card_references = {}  # Store card references by folder path
         self.store_card_references = {}     # folder_name → StoreCard  (Page 2)
         self.dashboard_folder_name_map = {} # folder_name → folder_path str (Page 1)
         self._store_data_cache = None       # cached result of _load_store_software(); None = stale
+        self._store_filter_text = ""        # the Store page's search text (the page is rebuilt from it, not patched)
+        self._store_filter_expanded = {}    # section open/closed state while a search is active (all open by default)
+        self._store_filter_timer = QTimer(self)
+        self._store_filter_timer.setSingleShot(True)
+        self._store_filter_timer.setInterval(200)           # one rebuild after typing pauses, not one per keystroke
+        self._store_filter_timer.timeout.connect(self._apply_store_filter)
         self._llm_worker = _LLMWorker()     # worker created at startup; init deferred until dialog opens
         self._busy_count = 0                # >0 while a refresh/download/install is in flight
         self._status_owner_token = 0        # bumped by any user action that should pre-empt an in-flight async op's status text
@@ -220,6 +226,7 @@ class MainWindow(QMainWindow):
         self.page_names = [
             "Dashboard",
             "Store",
+            "Dev Profile",
             "Favourites",
             "Useful Links",
             "News"
@@ -1043,9 +1050,10 @@ class MainWindow(QMainWindow):
         nav_items = [
             (0, "🚀", "Local Dashboard"),
             (1, "🏪", "Software Store"),
-            (2, "⭐", "Favourites"),
-            (3, "🔗", "Useful Links"),
-            (4, "📰", "News & Updates"),
+            (2, "👤", "Dev Profile"),
+            (3, "⭐", "Favourites"),
+            (4, "🔗", "Useful Links"),
+            (5, "📰", "News & Updates"),
         ]
 
         self.sidebar_buttons = []
@@ -1339,9 +1347,10 @@ class MainWindow(QMainWindow):
         titles = {
             0: "🚀 Local Dashboard",
             1: "🏪 Software Store",
-            2: "⭐ Favourites",
-            3: "🔗 Useful Links",
-            4: "📰 News & Updates"
+            2: "👤 Dev Profile",
+            3: "⭐ Favourites",
+            4: "🔗 Useful Links",
+            5: "📰 News & Updates"
         }
         self.title_label.setText(titles.get(self.current_page, "🚀 Software Dashboard"))
     
@@ -1434,6 +1443,9 @@ class MainWindow(QMainWindow):
         self.filter_edit.blockSignals(True)
         self.filter_edit.clear()
         self.filter_edit.blockSignals(False)
+        self._store_filter_timer.stop()
+        self._store_filter_text = ""
+        self._store_filter_expanded = {}
 
         # Update placeholder text to reflect which page is active
         if self.current_page == 0:
@@ -1490,6 +1502,8 @@ class MainWindow(QMainWindow):
     def _store_data_cache(self, value):
         self._store_data_cache_value = value
         if value is None:
+            self._dev_page_stale = True   # Dev Profile is built from the same App_Store folders
+            self._invalidate_dev_store()
             self._drop_store_cache()      # "stale" also means the cached page built from it is stale
 
     def _drop_store_cache(self):
@@ -1502,18 +1516,35 @@ class MainWindow(QMainWindow):
         self._store_view_cached = False
 
     def _store_cache_key(self, columns):
-        return (self._list_view_enabled, self._store_category_filter, columns,
-                tuple(sorted(self._store_category_expanded.items())), id(self._store_data_cache))
+        return (self._list_view_enabled, self._store_category_filter, columns, self._store_filter_text.lower(),
+                tuple(sorted(self._active_store_sections().items())), id(self._store_data_cache))
+
+    def _active_store_sections(self):
+        """Which dict owns the Store sections' open/closed state: while searching, every section is open so no match
+        hides inside a collapsed one; clearing the search brings back the user's own choices."""
+        return self._store_filter_expanded if self._store_filter_text else self._store_category_expanded
 
     def _display_current_page(self):
         """Display content for the current page"""
-        # Clear existing cards. The cached Store page is only detached and hidden, everything else is deleted.
+        # Swapping pages removes and adds many widgets: repaint once at the end, not after every one (the flash).
+        self.cards_scroll_area.setUpdatesEnabled(False)
+        try:
+            self._display_current_page_now()
+        finally:
+            self.cards_scroll_area.setUpdatesEnabled(True)
+
+    def _display_current_page_now(self):
+        # Clear existing cards. The cached Store page and the cached Dev Profile page are only detached and hidden,
+        # everything else is deleted.
         keep = getattr(self, "_store_view_cached", False)
+        dev_page = getattr(self, "_dev_page", None)
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
             widget = item.widget()
             if widget:
-                if keep:
+                if widget is dev_page:
+                    widget.hide()
+                elif keep:
                     widget.hide()
                 else:
                     widget.deleteLater()
@@ -1546,16 +1577,21 @@ class MainWindow(QMainWindow):
             self.cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             self._display_store_page()
         elif self.current_page == 2:
+            # Dev Profile page -- full width, like News
+            self.cards_layout.setAlignment(Qt.AlignTop)
+            self.cards_layout.setColumnStretch(0, 1)
+            self._display_dev_profile_page()
+        elif self.current_page == 3:
             # Favourites page — same card grid as Dashboard/Store, not a
             # full-width content page, so no column stretch.
             self.cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             self._display_favourites_page()
-        elif self.current_page == 3:
+        elif self.current_page == 4:
             # Useful Links page — let the layout fill full horizontal space
             self.cards_layout.setAlignment(Qt.AlignTop)
             self.cards_layout.setColumnStretch(0, 1)
             self._display_useful_links_page()
-        elif self.current_page == 4:
+        elif self.current_page == 5:
             # News page — let the layout fill full horizontal space
             self.cards_layout.setAlignment(Qt.AlignTop)
             self.cards_layout.setColumnStretch(0, 1)
@@ -1710,6 +1746,11 @@ class MainWindow(QMainWindow):
                 if (sw.get('category') or STORE_CATEGORY_LAST) == self._store_category_filter
             ]
 
+        searching = bool(self._store_filter_text)
+        if searching:
+            display_data = [sw for sw in display_data
+                            if self._matches_filter(sw['name'], self._store_filter_text, sw.get('author', ''))]
+
         # Both views share the same categorized layout -- List View is just
         # the 1-column case, with sequence numbers restored so the A-Z jump
         # bar still has something to number rows by.
@@ -1746,7 +1787,10 @@ class MainWindow(QMainWindow):
         # don't stomp on its live progress text (it's re-applied when done)
         if not self._is_busy:
             total_software = len(display_data)
-            if self._store_category_filter == STORE_CATEGORY_FILTER_ALL:
+            if searching:
+                self.status_label.setText(
+                    f"🔍 '{self._store_filter_text}' — {total_software} of {len(store_data)} software matched")
+            elif self._store_category_filter == STORE_CATEGORY_FILTER_ALL:
                 self.status_label.setText(f"🏪 {self.page_names[self.current_page]} - {total_software} software available")
             else:
                 self.status_label.setText(
@@ -1847,6 +1891,12 @@ class MainWindow(QMainWindow):
         for software in store_data:
             groups.setdefault(software.get('category') or STORE_CATEGORY_LAST, []).append(software)
 
+        if not groups and self._store_filter_text:
+            note = QLabel(f"🔍  No software matches '{self._store_filter_text}'.")
+            note.setStyleSheet("QLabel { font-size: 16px; color: #6b7280; padding: 40px 10px; }")
+            self.cards_layout.addWidget(note, 0, 0, 1, columns or self._current_card_columns())
+            return 1
+
         if columns is None:
             columns = self._current_card_columns()
         numbered = row_class is StoreListRow
@@ -1856,7 +1906,7 @@ class MainWindow(QMainWindow):
         for category in sorted(groups.keys(), key=_store_category_sort_key):
             apps = sorted(groups[category], key=lambda sw: sw['name'].lower())
             header, expanded = self._build_collapsible_section_header(
-                self._store_category_expanded, category, f"🏷️ {category} ({len(apps)})"
+                self._active_store_sections(), category, f"🏷️ {category} ({len(apps)})"
             )
             self.cards_layout.addWidget(header, row, 0, 1, columns)
             row += 1
@@ -2158,40 +2208,19 @@ class MainWindow(QMainWindow):
         return _matches_value(name) or (bool(author) and _matches_value(author))
 
     def _filter_store_cards(self, text: str):
-        """Show only Store cards whose name matches *text*, re-packing the grid."""
-        if not self.store_card_references:
+        """The Store search box changed. The page is rebuilt from the matching apps (section headers and counts
+        included), after a short pause in typing."""
+        text = text.strip()
+        if text == self._store_filter_text:
             return
+        self._store_filter_text = text
+        self._store_filter_expanded = {}
+        self._store_filter_timer.start()
 
-        # Remove all widgets from the grid layout (without destroying them)
-        while self.cards_layout.count():
-            self.cards_layout.takeAt(0)
-
-        # Re-add only matching cards in a compact 4-column grid
-        row = col = 0
-        matched = 0
-        for folder_name, card in self.store_card_references.items():
-            if self._matches_filter(card.software_name, text, card.author_name):
-                self.cards_layout.addWidget(card, row, col)
-                card.show()
-                matched += 1
-                col += 1
-                if col >= self._current_card_columns():
-                    col = 0
-                    row += 1
-            else:
-                card.hide()
-
-        # Update status bar
-        total = len(self.store_card_references)
-        if text.strip():
-            self.status_label.setText(
-                f"🔍 '{text.strip()}' — {matched} of {total} software matched"
-            )
-        else:
-            self.status_label.setText(
-                f"🏪 {self.page_names[1]} — {total} software available"
-            )
-        self._update_az_highlight()
+    def _apply_store_filter(self):
+        if self.current_page == 1:
+            self._display_current_page()
+            self._update_az_highlight()
 
     def _build_doc_page_html(self, html_body, accent, tint):
         """Wrap rendered markdown HTML in a clean, modern web-page shell.
@@ -2259,6 +2288,61 @@ class MainWindow(QMainWindow):
             }}
         """
         return f"<html><head><style>{css}</style></head><body><div class='page'>{html_body}</div></body></html>"
+
+    @staticmethod
+    def _invalidate_dev_store():
+        try:
+            from .dev_profile import shared_store
+            shared_store().invalidate()
+        except Exception:
+            pass
+
+    def prefetch_dev_profile(self):
+        """Read the App_Store data the Dev Profile page needs on a worker thread, so opening the tab does no disk work."""
+        def work():
+            try:
+                from .dev_profile import shared_store
+                shared_store().all_apps()
+            except Exception:
+                pass
+        Thread(target=work, daemon=True, name="DevProfilePrefetch").start()
+        QTimer.singleShot(1500, self._prebuild_dev_page)          # then build the page itself while the user is idle
+
+    def _new_dev_page(self):
+        from .dev_profile import DevProfilePage
+        if not hasattr(self, "_dev_profile_state"):
+            self._dev_profile_state = {}          # remembers the chosen developer / year between visits
+        self._dev_page_stale = False
+        return DevProfilePage(state=self._dev_profile_state, open_app=self._open_app_in_store)
+
+    def _prebuild_dev_page(self):
+        """Build the (hidden) Dev Profile page ahead of time: the first click on the tab just shows it."""
+        if getattr(self, "_dev_page", None) is None and self.current_page != 2:
+            try:
+                self._dev_page = self._new_dev_page()
+            except Exception as exc:
+                print(f"[DEV-PROFILE] prebuild skipped: {exc}")
+
+    def _display_dev_profile_page(self):
+        """Dev Profile: a GitHub-style page per developer (applications, pinned message, activity calendar)."""
+        page = getattr(self, "_dev_page", None)
+        if page is not None and getattr(self, "_dev_page_stale", False):
+            page.deleteLater()                    # App_Store changed since it was built: build it again
+            page = self._dev_page = None
+        if page is None:
+            # Built once and kept: later visits just show it again (the build reads ~160 files from App_Store).
+            page = self._dev_page = self._new_dev_page()
+        self.cards_layout.addWidget(page, 0, 0, 1, 4)
+        page.show()
+        if not self._is_busy:
+            self.status_label.setText(f"👤 {self.page_names[self.current_page]}")
+
+    def _open_app_in_store(self, folder_name):
+        """An application card on the Dev Profile page was clicked: show it in the Software Store."""
+        self.go_to_page(1)
+        self.filter_edit.setText(folder_name.rsplit("-", 1)[0])      # runs the search (debounced) ...
+        self._store_filter_timer.stop()
+        self._apply_store_filter()                                   # ... but the page should not wait for the pause
 
     def _display_news_page(self):
         """Display News page — reads all .md files from the News folder and renders them."""
@@ -2783,7 +2867,7 @@ class MainWindow(QMainWindow):
             self._drop_store_cache()       # a star changed somewhere else: the hidden Store cards are out of date
                                            # (on the Store page itself the clicked card already shows it)
 
-        if self.current_page == 2:
+        if self.current_page == 3:                 # Favourites
             self._display_current_page()
 
     def _open_settings_dialog(self):
@@ -3930,8 +4014,10 @@ class MainWindow(QMainWindow):
             else:
                 cache.append(entry)
                 cache.sort(key=lambda e: e['folder'])
+        self._dev_page_stale = True                          # the Dev Profile page shows this app's version and icon, too
+        self._invalidate_dev_store()
         self._drop_store_cache()
-        if self.current_page in (1, 2):                      # Software Store / Favourites show these cards
+        if self.current_page in (1, 3):                      # Software Store / Favourites show these cards
             bar = self.cards_scroll_area.verticalScrollBar()
             keep = bar.value()
             self._display_current_page()
