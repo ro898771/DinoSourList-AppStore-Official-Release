@@ -35,6 +35,7 @@ from .software_card import SoftwareCard
 from .store_card import StoreCard
 from .list_row import SoftwareListRow, StoreListRow, LIST_ROW_WIDTH
 from .boxlink_api import BoxLinkAPI, is_dotnet_missing_error, DOTNET_DOWNLOAD_URL
+from .ui_icons import DEV_PROFILE_ICON
 from .app_controller import AppStoreDownloadWorker, SingleCardDownloadWorker
 from .workers import (
     WorkerSignals, RefreshWorker, SingleCardRefreshWorker, CheckWorker,
@@ -1050,7 +1051,7 @@ class MainWindow(QMainWindow):
         nav_items = [
             (0, "🚀", "Local Dashboard"),
             (1, "🏪", "Software Store"),
-            (2, "👤", "Dev Profile"),
+            (2, DEV_PROFILE_ICON, "Dev Profile"),
             (3, "⭐", "Favourites"),
             (4, "🔗", "Useful Links"),
             (5, "📰", "News & Updates"),
@@ -1347,7 +1348,7 @@ class MainWindow(QMainWindow):
         titles = {
             0: "🚀 Local Dashboard",
             1: "🏪 Software Store",
-            2: "👤 Dev Profile",
+            2: f"{DEV_PROFILE_ICON} Dev Profile",
             3: "⭐ Favourites",
             4: "🔗 Useful Links",
             5: "📰 News & Updates"
@@ -2335,7 +2336,7 @@ class MainWindow(QMainWindow):
         self.cards_layout.addWidget(page, 0, 0, 1, 4)
         page.show()
         if not self._is_busy:
-            self.status_label.setText(f"👤 {self.page_names[self.current_page]}")
+            self.status_label.setText(f"{DEV_PROFILE_ICON} {self.page_names[self.current_page]}")
 
     def _open_app_in_store(self, folder_name):
         """An application card on the Dev Profile page was clicked: show it in the Software Store."""

@@ -30,13 +30,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QBuffer, QIODevice, QPoint, QPointF, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QBuffer, QIODevice, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QTextCursor)
 from PySide6.QtWidgets import (QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                                QScrollArea, QSizePolicy, QToolTip, QVBoxLayout, QWidget)
 
 from .dashboard_widgets import MODERN_SCROLLBAR_STYLE
+from .ui_icons import DEV_PROFILE_ICON
 
 APP_ROOT = Path(__file__).resolve().parent.parent.parent
 TWEET_LIMIT = 280
@@ -145,19 +146,45 @@ class ProfileStore:
         self.tweet_file = self.root / "config-record" / "dev_profile.json"
         self.activity_file = self.root / "config-record" / "dev_activity.json"
         self._apps: Optional[List[AppInfo]] = None
+        self._scan_lock = threading.Lock()
+        self._rescan_thread: Optional[threading.Thread] = None
+        self._rescan_wanted = False
+        self._memo: dict = {}                         # (author, ...) -> what activity() worked out
+        self.version = 0                              # +1 whenever the application list was re-read
         # Photos are a cache of what is in Box, kept outside the repository folder (nothing for git to see).
         base = os.environ.get("LOCALAPPDATA")
         self.photo_dir = (Path(base) / "DinoSaurList" / "dev_photos") if base else (self.root / "config-record" / "dev_photos")
 
     # ── applications (real) ──────────────────────────────────────────────────────
     def all_apps(self) -> List[AppInfo]:
-        """Every application, read from disk ONCE per store (about 160 small files); the page asks several times."""
+        """Every application. Read from disk once (about 160 small files); after that always answered from memory -
+        a change (invalidate) is picked up by a background thread while the old list keeps being served."""
         if self._apps is None:
-            self._apps = self._scan_apps()
+            with self._scan_lock:
+                if self._apps is None:
+                    self._apps = self._scan_apps()
         return self._apps
 
     def invalidate(self) -> None:
-        self._apps = None
+        """App_Store changed (a refresh). Re-read it in the background: nothing on the UI thread waits for the disk."""
+        self._memo.clear()
+        if self._apps is None:
+            return                                    # never read yet: the first all_apps() will see the new state
+        self._rescan_wanted = True
+        if self._rescan_thread is None or not self._rescan_thread.is_alive():
+            self._rescan_thread = threading.Thread(target=self._rescan, daemon=True, name="DevProfileRescan")
+            self._rescan_thread.start()
+
+    def _rescan(self) -> None:
+        while self._rescan_wanted:
+            self._rescan_wanted = False
+            try:
+                fresh = self._scan_apps()
+            except Exception:
+                continue
+            self._apps = fresh
+            self._memo.clear()
+            self.version += 1                         # a page built from the old list notices this when it is shown again
 
     def _scan_apps(self) -> List[AppInfo]:
         apps = []
@@ -536,6 +563,20 @@ class ProfileStore:
         listed by hand in config-record/dev_activity.json:
              {"events": [{"author": "RoeyYee", "date": "2026-11-05", "app": "GUQC", "version": "1.0.0.2", "kind": "update"}]}
         With neither for this developer, deterministic SAMPLE events are made up so the design can be judged."""
+        from . import box_dates
+        try:
+            manual_stamp = self.activity_file.stat().st_mtime_ns
+        except OSError:
+            manual_stamp = 0
+        key = (author, self.version, box_dates.stamp(), manual_stamp)
+        hit = self._memo.get(key)
+        if hit is not None:                           # switching back to a developer costs nothing
+            return hit
+        result = self._activity_now(author, apps)
+        self._memo[key] = result
+        return result
+
+    def _activity_now(self, author: str, apps: List[AppInfo]) -> Tuple[List[ActivityEvent], bool]:
         events = self._box_events(apps)
         try:
             raw = json.loads(self.activity_file.read_text(encoding="utf-8")).get("events", [])
@@ -826,11 +867,11 @@ class AppCard(QFrame):
 
 
 _EMOJI = {
-    "😀": "😀😃😄😁😆😅😂🤣😊😇🙂😉😍🥰😘😎🤩🥳🤔😴😬🙄😢😭😡🤯😱🤗😌😋🤓🥹🫡",
-    "👍": "👍👎👏🙌🙏💪👋🤝✌️🤞👌👀🧠❤️🧡💛💚💙💜🖤💯🔥✨⭐🌟💥💫🎶🫶",
+    "😀": "😀😃😄😁😆😅😂🤣😊😇🙂😉😍🥰😘😎🤩🥳🤔😴😬🙄😢😭😡🤯😱🤗😌😋🤓😏😜",
+    "👍": "👍👎👏🙌🙏💪👋🤝✌️🤞👌👀🧠❤️🧡💛💚💙💜🖤💯🔥✨⭐🌟💥💫🎶💕",
     "💻": "💻🖥️⌨️🖱️🛠️🔧⚙️🧪🔬📊📈📉📌📎📝📅⏰🔔📣💡🔍🔒🔑🧩🚀🎯🏆🥇📦🗂️📁",
     "🎉": "🎉🎊🎁🎈☕🍕🍺🍰🌈☀️🌙⚡🌊🌱🌸🐱🐶🦕🐢🦄🐞🦋🍀🌍🏖️🎮🎵📷",
-    "✅": "✅❌⚠️❓❗➕➖➡️⬆️⬇️🔄✔️💬🗣️🆕🆗🔴🟢🟡🔵⭕🚫♻️🔗",
+    "✅": "✅❌⚠️❓❗➕➖➡️⬆️⬇️🔄✔️💬🗣️🆕🆗🔴⭕🚫♻️🔗",
 }
 
 
@@ -1177,7 +1218,7 @@ class DevProfilePage(QWidget):
         self._lay.setSpacing(16)
         self._devs = self._store.developers()
         if not self._devs:
-            self._lay.addWidget(_label("👤 No developers found yet - refresh the Software Store first.",
+            self._lay.addWidget(_label(f"{DEV_PROFILE_ICON} No developers found yet - refresh the Software Store first.",
                                        "font-size: 18px; color: #6c757d; padding: 60px;"))
             return
         self._author = self._state.get("author") if self._state.get("author") in self._devs else self._devs[0]
@@ -1202,14 +1243,15 @@ class DevProfilePage(QWidget):
                 item.layout().deleteLater()
 
     def _build(self):
+        """Build the page in three short steps. The top (name, photo, message, Jira links) appears at once; the stat cards
+        and calendar, then the applications and the activity list, follow in the next turns of the event loop - so choosing a
+        developer never freezes the window for the whole build, even while a refresh keeps the CPU busy."""
         self._clear()
-        author = self._author
+        self._gen = getattr(self, "_gen", 0) + 1
+        gen, author = self._gen, self._author
         self._state["author"] = author
+        self._built_version = self._store.version
         apps = self._store.apps_of(author)
-        self._events, self._sample = self._store.activity(author, apps)
-        years = sorted({e.day.year for e in self._events}, reverse=True) or [date.today().year]
-        self._years = years
-        self._year = self._state.get("year") if self._state.get("year") in years else years[0]
         versions = sum(len(a.versions) for a in apps)
 
         self._lay.addWidget(self._header(author, apps, versions))
@@ -1220,13 +1262,27 @@ class DevProfilePage(QWidget):
         self._jira = JiraLinksCard(self._store.links(author))
         self._jira.changed.connect(self._on_links_changed)
         self._lay.addWidget(self._jira)
+        self._sync_tweet()
+        QTimer.singleShot(0, lambda: self._build_middle(gen, author, apps, versions))
+
+    def _build_middle(self, gen, author, apps, versions):
+        if gen != self._gen:
+            return                                    # another developer was chosen meanwhile
+        self._events, self._sample = self._store.activity(author, apps)
+        years = sorted({e.day.year for e in self._events}, reverse=True) or [date.today().year]
+        self._years = years
+        self._year = self._state.get("year") if self._state.get("year") in years else years[0]
         self._lay.addLayout(self._stats(apps, versions))
         self._lay.addWidget(self._calendar_card())
+        QTimer.singleShot(0, lambda: self._build_tail(gen, apps))
+
+    def _build_tail(self, gen, apps):
+        if gen != self._gen:
+            return
         self._lay.addWidget(self._apps_section(apps))
         self._lay.addWidget(self._timeline_card())
         self._lay.addStretch(1)
         self._refresh_year()
-        self._sync_tweet()
 
     def _header(self, author, apps, versions) -> QFrame:
         from .news_editor import ModernCombo
@@ -1508,7 +1564,9 @@ class DevProfilePage(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         # the page is kept between visits: look at Box again when it is shown after a while (others may have written)
-        if hasattr(self, "_tweet") and time.monotonic() - self._last_sync > 120:
+        if hasattr(self, "_tweet") and self._store.version != getattr(self, "_built_version", self._store.version):
+            self._build()                             # the application list was re-read since this page was built
+        elif hasattr(self, "_tweet") and time.monotonic() - self._last_sync > 120:
             self._sync_tweet()
 
     def _on_tweet_synced(self, author, state, text, updated, photo):

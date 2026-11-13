@@ -1,8 +1,10 @@
 ## 🎉 Official Released {{APP_VERSION}}
 
-- Add Favourite Tab
-- Add Setting for Refresh to speed up the refresh processing time
-- Categorize the Software Application due to large volume Application been deploy
+- Speed up Refresh processing
+- Improve User experience on Software Update Method
+- Bug Fix on Individual Refresh
+- Bug Fix on Black terminal flash out
+- Implement Developer Profile
 
 
 ## 💡 What is Dinosaur-List? 

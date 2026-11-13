@@ -13,6 +13,7 @@ by the normal Refresh (full, selected, new apps, or the per-card button); nothin
 """
 
 import json
+import os
 import re
 import threading
 from datetime import date, datetime
@@ -63,18 +64,37 @@ def absorb(listing: Optional[dict]) -> None:
         if changed:
             try:
                 _FILE.parent.mkdir(exist_ok=True)
-                _FILE.write_text(json.dumps(known, indent=1, ensure_ascii=False), encoding="utf-8")
+                tmp = _FILE.with_name(_FILE.name + ".tmp")
+                tmp.write_text(json.dumps(known, indent=1, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, _FILE)            # a reader (the Dev Profile page) sees the old or the new file, never half
             except OSError:
                 pass
 
 
+_read_memo = {"stamp": None, "data": {}}
+
+
+def stamp() -> tuple:
+    """Changes whenever the saved dates change (used to remember what was computed from them)."""
+    try:
+        st = _FILE.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, 0)
+
+
 def lookup() -> Dict[str, dict]:
-    """Everything saved so far, read fresh from disk (the Dev Profile page asks once per build)."""
+    """Everything saved so far. The file is parsed again only when it changed on disk."""
+    now = stamp()
+    if _read_memo["stamp"] == now:
+        return _read_memo["data"]
     try:
         data = json.loads(_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        data = data if isinstance(data, dict) else {}
     except (OSError, ValueError):
-        return {}
+        return _read_memo["data"] if _read_memo["stamp"] is not None else {}      # keep the last good copy
+    _read_memo["stamp"], _read_memo["data"] = now, data
+    return data
 
 
 def local_day(stamp: Optional[str]) -> Optional[date]:
