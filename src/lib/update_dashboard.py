@@ -81,9 +81,8 @@ class UpdateDashboard(QWidget):
         self._logo.setStyleSheet("background: #e6f7f0; border-radius: 12px;")
         self._movie = None
         if _GIF.exists():
-            self._movie = QMovie(str(_GIF))
-            self._movie.setScaledSize(self._logo.size() * 0.8)
-            self._logo.setMovie(self._movie)
+            from .smooth_gif import SmoothGif
+            self._movie = SmoothGif(self._logo, _GIF, int(self._logo.width() * 0.8))
             self._movie.start()
 
         self._title = QLabel("Checking for updates")

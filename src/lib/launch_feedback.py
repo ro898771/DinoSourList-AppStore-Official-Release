@@ -182,9 +182,8 @@ class LaunchOverlay(QWidget):
         logo.setStyleSheet("background: #e6f7f0; border-radius: 12px;")
         self._movie = None
         if _GIF.exists():
-            self._movie = QMovie(str(_GIF))
-            self._movie.setScaledSize(logo.size() * 0.8)
-            logo.setMovie(self._movie)
+            from .smooth_gif import SmoothGif
+            self._movie = SmoothGif(logo, _GIF, int(logo.width() * 0.8))
             self._movie.start()
         else:
             logo.setText("🦕")

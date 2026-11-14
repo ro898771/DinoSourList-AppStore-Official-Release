@@ -693,10 +693,9 @@ class MainWindow(QMainWindow):
         _dlg_gif_lbl = QLabel()
         _dino_path2 = Path(__file__).parent.parent.parent / "Sw-icon" / "d2.gif"
         if _dino_path2.exists():
-            from PySide6.QtCore import QSize as _QSize2
-            _dlg_dino_movie = QMovie(str(_dino_path2))
-            _dlg_dino_movie.setScaledSize(_QSize2(45, 45))
-            _dlg_gif_lbl.setMovie(_dlg_dino_movie)
+            from .smooth_gif import SmoothGif
+            _dlg_gif_lbl.setFixedSize(45, 45)
+            _dlg_dino_movie = SmoothGif(_dlg_gif_lbl, _dino_path2, 45)       # sharp on scaled (HiDPI) screens
             _dlg_dino_movie.start()
             self._dlg_dino_movie = _dlg_dino_movie   # prevent GC
         else:
@@ -1097,9 +1096,8 @@ class MainWindow(QMainWindow):
         """)
         dino_path = Path(__file__).parent.parent.parent / "Sw-icon" / "d2.gif"
         if dino_path.exists():
-            self._sidebar_ai_movie = QMovie(str(dino_path))
-            self._sidebar_ai_movie.setScaledSize(QSize(44, 44))
-            self.sidebar_logo_label.setMovie(self._sidebar_ai_movie)
+            from .smooth_gif import SmoothGif
+            self._sidebar_ai_movie = SmoothGif(self.sidebar_logo_label, dino_path, 44)   # sharp on scaled (HiDPI) screens
             self._sidebar_ai_movie.start()
         else:
             self.sidebar_logo_label.setText("🦕")
