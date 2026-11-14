@@ -103,29 +103,55 @@ class _LLMWorker(QObject):
     reload_done = Signal(str)         # message describing result
     # Emitted on any error
     error       = Signal(str)
+    # What the loading bar in the chat shows: (message, done, total); total 0 = length unknown
+    progress    = Signal(str, int, int)
+    # README files that were just downloaded (App_Store folder names): their buttons stop being orange
+    readmes_fetched = Signal(list)
 
     def __init__(self):
         super().__init__()
         self.assistant = None
         self._ready    = False
+        self.initializing = False          # True while do_init() is running (a second dialog must not start another)
+        self.last_progress = None          # the latest progress message, for a dialog opened half-way through
+
+    def _say(self, message: str, done: int = 0, total: int = 0):
+        self.last_progress = (message, done, total)
+        self.progress.emit(message, done, total)
 
     # ── Called in background thread ──────────────────────────────────────────
     def do_init(self):
+        self.initializing = True
         try:
             from .LLMController import DinosaurVectorBot
             self._fetch_readmes()
+            self._say("Building the knowledge base from the READMEs…")
             self.assistant = DinosaurVectorBot()   # paths auto-resolved to App_Store/
             self.assistant.load_and_index()        # build TF-IDF index from App_Store READMEs
             self._ready = True
+            self.last_progress = None
             self.init_done.emit()
         except Exception as exc:
+            self.last_progress = None
             self.error.emit(f"Initialisation failed: {exc}")
+        finally:
+            self.initializing = False
 
-    @staticmethod
-    def _fetch_readmes():
-        """Refresh only downloads icons + Flow.txt; the assistant indexes READMEs, so pull the missing/outdated ones now."""
+    def _fetch_readmes(self):
+        """Refresh only downloads icons + Flow.txt; the assistant indexes READMEs, so pull the missing/outdated ones now.
+        The chat shows how far it is, and the README buttons of the apps that were fetched turn from orange to blue."""
+        import re
         try:
-            docs.fetch_missing_readmes(Path(__file__).parent.parent.parent / "App_Store")
+            self._say("Checking which README files are missing…")
+            fetched: list = []
+
+            def on_progress(message: str):
+                m = re.search(r"(\d+)/(\d+)", message)
+                self._say(message, int(m.group(1)), int(m.group(2))) if m else self._say(message)
+
+            docs.fetch_missing_readmes(Path(__file__).parent.parent.parent / "App_Store", progress=on_progress, fetched=fetched)
+            if fetched:
+                self.readmes_fetched.emit(fetched)
         except Exception as exc:
             print(f"[AI] README fetch skipped: {exc}")
 
@@ -143,10 +169,13 @@ class _LLMWorker(QObject):
         """Re-scan App_Store READMEs and rebuild the TF-IDF index."""
         try:
             self._fetch_readmes()
+            self._say("Rebuilding the knowledge base…")
             self.assistant.reload_and_index()
             count = len(self.assistant.chunks)
+            self.last_progress = None
             self.reload_done.emit(f"Re-indexed {count} tool(s) from App_Store.")
         except Exception as exc:
+            self.last_progress = None
             self.reload_done.emit(f"Reload failed: {exc}")
 
     @property
@@ -189,6 +218,7 @@ class MainWindow(QMainWindow):
         self._store_filter_timer.setInterval(200)           # one rebuild after typing pauses, not one per keystroke
         self._store_filter_timer.timeout.connect(self._apply_store_filter)
         self._llm_worker = _LLMWorker()     # worker created at startup; init deferred until dialog opens
+        self._llm_worker.readmes_fetched.connect(self._on_readmes_fetched)
         self._busy_count = 0                # >0 while a refresh/download/install is in flight
         self._status_owner_token = 0        # bumped by any user action that should pre-empt an in-flight async op's status text
         self._ai_dialog = None              # AI Assistant dialog instance (kept non-modal)
@@ -705,6 +735,25 @@ class MainWindow(QMainWindow):
         thinking_label.hide()
         root.addWidget(thinking_label)
 
+        # Loading panel - what the assistant is doing while it fetches the READMEs and builds its knowledge base, with a bar
+        from .dashboard_widgets import ProgressStrip
+        load_panel = QFrame()
+        load_panel.setObjectName("loadpanel")
+        load_panel.setStyleSheet("QFrame#loadpanel { background: #eef4ff; border: 1px solid #cfe2ff; border-radius: 8px; }"
+                                 "QLabel { background: transparent; border: none; }")
+        load_label = QLabel("")
+        load_label.setStyleSheet("color: #0a58ca; font-size: 13px; font-weight: 600;")
+        load_bar = ProgressStrip()
+        load_bar.set_brush("#0d6efd")
+        load_bar.setFixedHeight(8)
+        load_lay = QVBoxLayout(load_panel)
+        load_lay.setContentsMargins(12, 8, 12, 10)
+        load_lay.setSpacing(6)
+        load_lay.addWidget(load_label)
+        load_lay.addWidget(load_bar)
+        load_panel.hide()
+        root.addWidget(load_panel)
+
         _dot_frames = ["🦕  Thinking ·", "🦕  Thinking · ·", "🦕  Thinking · · ·"]
         _dot_index  = [0]
 
@@ -797,8 +846,21 @@ class MainWindow(QMainWindow):
                 thinking_label.hide()
                 send_btn.setText("Send")
 
+        def _show_progress(message: str, done: int = 0, total: int = 0):
+            load_panel.show()
+            load_label.setText(f"⏳ {message}")
+            if total > 0:
+                load_bar.set_fraction(done / total)
+            else:
+                load_bar.set_indeterminate()
+
+        def _hide_progress():
+            load_bar.set_fraction(0)              # also stops the sliding animation
+            load_panel.hide()
+
         # ── LLM worker signals ───────────────────────────────────────────────
         worker = self._llm_worker
+        worker.progress.connect(_show_progress)
 
         def _on_token(tok: str):
             _append_text(tok)
@@ -819,6 +881,7 @@ class MainWindow(QMainWindow):
 
         # ── Reload README handler ─────────────────────────────────────────────
         def _on_reload_done(msg: str):
+            _hide_progress()
             reload_btn.setEnabled(True)
             reload_btn.setText("Reload README")
             _append_html(f"<br><b style='color:#198754'>✅ {msg}</b>")
@@ -846,6 +909,7 @@ class MainWindow(QMainWindow):
             reload_btn.setEnabled(False)
             reload_btn.setText("Reloading…")
             _append_html("<br><i style='color:#6c757d'>Reloading READMEs from App_Store…</i>")
+            _show_progress("Reloading the README files…")
             from threading import Thread as _Thread
             self._reload_thread = _Thread(target=worker.do_reload, daemon=True)
             self._reload_thread.start()
@@ -854,6 +918,8 @@ class MainWindow(QMainWindow):
 
         # Disconnect all dialog-local slots when dialog closes
         def _cleanup():
+            try: worker.progress.disconnect(_show_progress)
+            except Exception: pass
             try: worker.token_ready.disconnect(_on_token)
             except Exception: pass
             try: worker.reply_done.disconnect(_on_reply_done)
@@ -931,6 +997,7 @@ class MainWindow(QMainWindow):
             _show_welcome()
         else:
             def _on_init_done():
+                _hide_progress()
                 send_btn.setEnabled(True)
                 _show_welcome()
                 try: worker.init_done.disconnect(_on_init_done)
@@ -939,6 +1006,7 @@ class MainWindow(QMainWindow):
                 except Exception: pass
 
             def _on_init_error(msg: str):
+                _hide_progress()
                 _append_html(
                     f"<b style='color:#dc3545'>❌ Could not load AI: {msg}</b><br>"
                 )
@@ -957,10 +1025,12 @@ class MainWindow(QMainWindow):
                 "Loading AI model and knowledge base — this may take a few seconds on first launch…</i><br>"
             )
 
-            self._llm_init_thread = Thread(
-                target=worker.do_init, daemon=True
-            )
-            self._llm_init_thread.start()
+            _show_progress(*(worker.last_progress or ("Starting the assistant…", 0, 0)))
+            if not worker.initializing:                # a dialog reopened half-way must not start a second load
+                self._llm_init_thread = Thread(
+                    target=worker.do_init, daemon=True
+                )
+                self._llm_init_thread.start()
 
         # ── Show non-modally so the main window stays interactive ────────────
         self._ai_dialog = dialog
@@ -4752,6 +4822,13 @@ class MainWindow(QMainWindow):
         """True when this app's README is on Box but not downloaded yet / outdated (its button shows orange)."""
         info, _ = self._installed_readme_doc(folder)
         return info.state == docs.REMOTE
+
+    def _on_readmes_fetched(self, names):
+        """The AI assistant downloaded these apps' README files: every README button for them (Software Store card, Local
+        Dashboard card) changes from orange to blue straight away."""
+        root = Path(__file__).parent.parent.parent / "App_Store"
+        for name in names:
+            self._refresh_doc_buttons(root / name)
 
     def _refresh_doc_buttons(self, store_folder: Path):
         """A README/guide was just downloaded: put the matching buttons (Store card and any installed card of the same

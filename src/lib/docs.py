@@ -181,7 +181,8 @@ def download(info: DocInfo, store_folder: Path) -> Path:
     return store_folder / info.file_name
 
 
-def fetch_missing_readmes(app_store_dir: Path, progress: Optional[Callable[[str], None]] = None) -> int:
+def fetch_missing_readmes(app_store_dir: Path, progress: Optional[Callable[[str], None]] = None,
+                          fetched: Optional[list] = None) -> int:
     """
     Download every README that is listed on Box but missing (or out of date) locally, all at once, one Box call each.
     The AI assistant indexes App_Store READMEs, so it calls this before building its index. Returns how many were fetched.
@@ -207,6 +208,8 @@ def fetch_missing_readmes(app_store_dir: Path, progress: Optional[Callable[[str]
             ok, _, _ = api.download_small_dict(info.file_id, str(d), info.file_name)
             if ok:
                 mark_fresh(d, info.file_name)
+                if fetched is not None:
+                    fetched.append(d.name)           # lets the caller recolour the README buttons of exactly these apps
         except Exception:
             pass   # skip: indexed from what is local
         if progress:
