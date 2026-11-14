@@ -4287,6 +4287,32 @@ class MainWindow(QMainWindow):
                 f"Folder does not exist:\n{folder}"
             )
     
+    def _launch_display_name(self, folder_path) -> str:
+        """The name shown on the Opening... card: the app's own name, not its folder name."""
+        try:
+            from .folder_parser import parse_software_folder_name, format_software_name
+            return format_software_name(parse_software_folder_name(Path(folder_path).name)) or Path(folder_path).name
+        except Exception:
+            return Path(folder_path).name
+
+    def _begin_launch_feedback(self, folder_path, name, pid, windows_before, token):
+        """The program has been started: show "Opening <name>" until its window is up, so nobody has to wonder whether the
+        click did anything (and nobody clicks again and starts a second copy)."""
+        try:
+            from .launch_feedback import LaunchWatcher
+            watcher = LaunchWatcher(self, name, pid, windows_before)
+        except Exception as exc:                     # feedback must never get in the way of the launch itself
+            print(f"[LAUNCH] feedback card unavailable: {exc}")
+            return
+        self.__dict__.setdefault("_launches", {})[folder_path] = watcher
+        self._set_status_if_current(token, f"⏳ Opening {name}…")
+
+        def done(reason):
+            self.__dict__.setdefault("_launches", {}).pop(folder_path, None)
+            self._set_status_if_current(token, f"🚀 {name} is open" if reason == "opened" else f"🚀 Launched {name}")
+
+        watcher.finished.connect(done)
+
     def launch_software(self, folder_path):
         """Launch software using exec_path from Flow.txt [Execution] file=.
 
@@ -4299,7 +4325,15 @@ class MainWindow(QMainWindow):
         # Claim the status bar so a stale progress/completion callback from an
         # older background op (e.g. a delete still finishing up) can't overwrite
         # the launch feedback this action is about to show.
-        self._claim_status_owner()
+        token = self._claim_status_owner()
+        launches = self.__dict__.setdefault("_launches", {})
+        app_name = self._launch_display_name(folder_path)
+        still_opening = launches.get(folder_path)
+        if still_opening is not None:
+            # Clicked again while it is still starting: do NOT start a second copy; just show the card again.
+            still_opening.raise_overlay()
+            self.status_label.setText(f"⏳ {app_name} is still opening…")
+            return
 
         print(f"\n{'='*60}")
         print(f"[LAUNCH] Requested folder_path : {folder_path}")
@@ -4323,6 +4357,8 @@ class MainWindow(QMainWindow):
 
         if exec_path and exec_path.exists():
             try:
+                from .launch_feedback import snapshot_windows
+                windows_before = snapshot_windows()          # to recognise the program's own window afterwards
                 cwd   = str(exec_path.parent)
                 suffix = exec_path.suffix.lower()
 
@@ -4343,6 +4379,7 @@ class MainWindow(QMainWindow):
                         raise OSError(f"ShellExecuteW returned error code {ret} for '{exec_path.name}'")
                     print(f"[LAUNCH] Shell-open succeeded (ShellExecute ret={ret})")
                     self.status_label.setText(f"🚀 Opened {Path(folder_path).name}")
+                    self._begin_launch_feedback(folder_path, app_name, None, windows_before, token)
 
                 else:
                     if suffix in ('.bat', '.cmd', '.ps1'):
@@ -4360,6 +4397,7 @@ class MainWindow(QMainWindow):
                     )
                     print(f"[LAUNCH] Process started     : PID={proc.pid}")
                     self.status_label.setText(f"🚀 Launched {Path(folder_path).name}")
+                    self._begin_launch_feedback(folder_path, app_name, proc.pid, windows_before, token)
 
             except OSError as e:
                 print(f"[LAUNCH] ERROR               : {e}")
@@ -4374,6 +4412,7 @@ class MainWindow(QMainWindow):
                             raise RuntimeError(f"ShellExecute returned error code {ret}")
                         print(f"[LAUNCH] Elevated launch succeeded (ShellExecute ret={ret})")
                         self.status_label.setText(f"🚀 Launched {Path(folder_path).name} (elevated)")
+                        self._begin_launch_feedback(folder_path, app_name, None, windows_before, token)
                     except Exception as e2:
                         print(f"[LAUNCH] Elevated launch failed: {e2}")
                         self._report_log(f"Elevated launch failed for '{folder_path}': {e2}")
